@@ -31,8 +31,8 @@ from torchvision import transforms
 # The undistorted crop is 512x512 centred on the optical axis.
 UNDISTORT_WIDTH = 512
 UNDISTORT_HEIGHT = 512
-UNDISTORT_FX = 280.0  # pixels — tune after running compute_undistort_map.py
-UNDISTORT_FY = 280.0
+UNDISTORT_FX = 147.8  # pixels — tune after running compute_undistort_map.py
+UNDISTORT_FY = 147.8
 UNDISTORT_CX = 256.0
 UNDISTORT_CY = 256.0
 
