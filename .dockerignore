@@ -1,0 +1,24 @@
+# Keep the Docker build context lean — only the source files are needed.
+# Data, logs, and checkpoints are all bind-mounted at runtime, never baked in.
+
+# Large data and output directories
+endovis_data/
+logs/
+pretrained/
+undistort_maps/
+splits/c3vdv2/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Git history (not needed inside the image)
+.git/
