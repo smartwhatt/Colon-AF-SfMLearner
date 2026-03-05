@@ -1,7 +1,26 @@
 # =============================================================================
 # AF-SfMLearner C3VDv2 Training Image
+# Base: NVIDIA CUDA 11.8 + cuDNN 8, Ubuntu 22.04 
+# PyTorch: 2.x (compatible with the repo's current pyproject.toml) 
+# 
+# Build: 
+# docker build -t af-sfmlearner:c3vdv2 . 
+# 
+# Run (interactive): 
+# docker run --gpus all --rm -it \ 
+# -v /path/to/C3VDv2:/data/C3VDv2 \ 
+# -v /path/to/repo:/workspace \ 
+# -v /path/to/logs:/workspace/logs \ 
+# af-sfmlearner:c3vdv2 bash # 
+# Run (direct fine-tuning): 
+# docker run --gpus all --rm \ 
+# -v /path/to/C3VDv2:/data/C3VDv2 \ 
+# -v /path/to/repo:/workspace \ 
+# -v /path/to/logs:/workspace/logs \ 
+# af-sfmlearner:c3vdv2 \ # bash scripts/run_finetune_c3vdv2.sh 
+#
 # =============================================================================
-FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+FROM --platform=linux/amd64 nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
@@ -32,10 +51,8 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
 # ---------------------------------------------------------------------------
 # Install uv (fast python package manager)
 # ---------------------------------------------------------------------------
-RUN curl -Ls https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:$PATH"
-
 RUN python -m pip install --upgrade pip
+RUN pip install --no-cache-dir uv
 
 # ---------------------------------------------------------------------------
 # Set working directory
@@ -48,7 +65,7 @@ WORKDIR /workspace
 COPY pyproject.toml uv.lock* ./
 
 # Install dependencies using uv
-RUN uv sync --no-dev
+RUN uv sync --no-dev --python 3.11
 
 # ---------------------------------------------------------------------------
 # Install CUDA-compatible PyTorch separately
