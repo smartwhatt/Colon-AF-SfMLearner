@@ -20,8 +20,7 @@
 #   - C3VDv2 dataset downloaded and organised
 #   - Undistortion maps computed: python compute_undistort_map.py ...
 #   - Split files generated:      python generate_splits.py ...
-#   - Both fine-tune scripts (this file, finetune_c3vdv2_stage1.py,
-#     finetune_c3vdv2_stage2.py) copied to the repo root
+#   - AF-SfMLearner repo cloned and set up (train.py entry point)
 #
 # Usage:
 #   bash run_finetune_c3vdv2.sh
@@ -125,7 +124,8 @@ run_stage1() {
         echo "  Init:    random (no pretrained Stage 1 weights found)"
     fi
 
-    CUDA_VISIBLE_DEVICES=$GPU uv run finetune_c3vdv2_stage1.py \
+    CUDA_VISIBLE_DEVICES=$GPU uv run python train.py --mode c3vdv2_stage1 \
+        --dataset             c3vdv2 \
         --data_path           "$DATA_PATH" \
         --split               "$SPLIT" \
         --undistort_maps      "$UNDISTORT_MAPS" \
@@ -162,7 +162,8 @@ run_stage2() {
         exit 1
     fi
 
-    CUDA_VISIBLE_DEVICES=$GPU uv run finetune_c3vdv2_stage2.py \
+    CUDA_VISIBLE_DEVICES=$GPU uv run python train.py --mode c3vdv2_stage2 \
+        --dataset             c3vdv2 \
         --data_path           "$DATA_PATH" \
         --split               "$SPLIT" \
         --undistort_maps      "$UNDISTORT_MAPS" \
@@ -204,7 +205,7 @@ run_stage2
 log "ALL DONE"
 echo ""
 echo "  Evaluate with:"
-echo "  uv run evaluate_c3vdv2.py \\"
+echo "  uv run python tools/evaluate_c3vdv2.py \\"
 echo "      --data_path $DATA_PATH \\"
 echo "      --load_weights_folder ${LOG_DIR}/${S2_LOG_NAME}/models/weights_$((S2_EPOCHS - 1))/ \\"
 echo "      --split $SPLIT"
