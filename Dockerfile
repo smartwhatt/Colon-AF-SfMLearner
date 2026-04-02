@@ -20,7 +20,7 @@
 # af-sfmlearner:c3vdv2 \ # bash scripts/run_finetune_c3vdv2.sh 
 #
 # =============================================================================
-FROM --platform=linux/amd64 nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+FROM --platform=linux/amd64 pytorch/pytorch:2.8.0-cuda12.9-cudnn9-runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
@@ -70,10 +70,10 @@ RUN uv sync --no-dev --python 3.11
 # ---------------------------------------------------------------------------
 # Install CUDA-compatible PyTorch separately
 # ---------------------------------------------------------------------------
-RUN uv pip install \
-    torch==2.1.2+cu118 \
-    torchvision==0.16.2+cu118 \
-    --index-url https://download.pytorch.org/whl/cu118
+# RUN uv pip install \
+#     torch==2.1.2+cu118 \
+#     torchvision==0.16.2+cu118 \
+#     --index-url https://download.pytorch.org/whl/cu118
 
 # ---------------------------------------------------------------------------
 # Runtime environment settings
