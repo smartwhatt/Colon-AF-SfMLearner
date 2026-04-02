@@ -1,6 +1,6 @@
 from __future__ import absolute_import, division, print_function
 
-from trainer_stage_one import Trainer
+from trainers import StageOneTrainer as Trainer
 from options import MonodepthOptions
 
 options = MonodepthOptions()

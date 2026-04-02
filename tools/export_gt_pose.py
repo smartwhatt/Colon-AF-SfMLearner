@@ -1,6 +1,11 @@
 from __future__ import absolute_import, division, print_function
 
+import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 import json
 import argparse
 
@@ -23,7 +28,7 @@ def export_gt_depths_SCARED():
                         choices=["eigen", "eigen_benchmark", "endovis"])
     opt = parser.parse_args()
 
-    split_folder = os.path.join(os.path.dirname(__file__), "splits", opt.split)
+    split_folder = os.path.join(_ROOT, "splits", opt.split)
     lines = readlines(os.path.join(split_folder, "test_files.txt"))
     print("Exporting ground truth depths for {}".format(opt.split))
 

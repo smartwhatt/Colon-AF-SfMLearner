@@ -1,6 +1,11 @@
 from __future__ import absolute_import, division, print_function
 
+import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 import torch
 import networks
 import numpy as np
@@ -75,7 +80,7 @@ def evaluate(opt):
         "Cannot find a folder at {}".format(opt.load_weights_folder)
 
     filenames = readlines(
-        os.path.join(os.path.dirname(__file__), "splits", "endovis",
+        os.path.join(_ROOT, "splits", "endovis",
                      "test_files_sequence2.txt"))
 
     dataset = SCAREDRAWDataset(opt.data_path, filenames, opt.height, opt.width,
@@ -118,7 +123,7 @@ def evaluate(opt):
 
     pred_poses = np.concatenate(pred_poses)
 
-    gt_path = os.path.join(os.path.dirname(__file__), "splits", "endovis", "gt_poses_sq2.npz")
+    gt_path = os.path.join(_ROOT, "splits", "endovis", "gt_poses_sq2.npz")
     gt_local_poses = np.load(gt_path, fix_imports=True, encoding='latin1')["data"]
 
     ates = []

@@ -57,7 +57,7 @@ CUDA_VISIBLE_DEVICES=0 python train.py --mode c3vdv2_stage2 \
   --w_depth_start 1.0 --w_depth_end 0.3 --w_pose_start 0.5 --w_pose_end 0.1
 ```
 
-The old per-mode entry scripts (`train_stage_one.py`, `train_stage_two.py`, `train_end_to_end.py`) still work as backward-compat wrappers.
+The old per-mode entry scripts (`train_stage_one.py`, `train_stage_two.py`, `train_end_to_end.py`) still work as backward-compat wrappers (they import directly from `trainers/`).
 
 **C3VDv2 automated pipeline** (undistortion + both stages):
 ```bash
@@ -71,11 +71,11 @@ DATA_PATH=/path/to/C3VDv2 LOG_DIR=logs/c3vdv2 bash scripts/run_finetune_c3vdv2.s
 python test_simple.py --model_path <weights_dir> --image_path <image_or_folder>
 
 # SCARED/Endovis depth evaluation (requires exporting GT first)
-python export_gt_depth.py --data_path endovis_data --split endovis
-python evaluate_depth.py --data_path <endovis_data> --load_weights_folder <weights> --eval_mono
+python tools/export_gt_depth.py --data_path endovis_data --split endovis
+python tools/evaluate_depth.py --data_path <endovis_data> --load_weights_folder <weights> --eval_mono
 
 # C3VDv2 evaluation
-uv run evaluate_c3vdv2.py --data_path /path/to/C3VDv2 --load_weights_folder <weights> --split c3vdv2
+uv run tools/evaluate_c3vdv2.py --data_path /path/to/C3VDv2 --load_weights_folder <weights> --split c3vdv2
 ```
 
 ## Trainer Architecture
@@ -158,7 +158,7 @@ Notable non-obvious defaults:
 
 Loss weights (all tunable): `--disparity_smoothness 1e-4`, `--position_smoothness 1e-3`, `--consistency_constraint 0.01`, `--epipolar_constraint 0.01`, `--geometry_constraint 0.01`, `--transform_constraint 0.01`, `--transform_smoothness 0.01`.
 
-## Supervised Fine-tuning Losses (c3vdv2_losses.py)
+## Supervised Fine-tuning Losses (trainers/c3vdv2_losses.py)
 
 For C3VDv2 fine-tuning, supervised losses are added on top of the self-supervised photometric loss:
 - `scale_invariant_log_loss()` — depth supervision (Eigen et al. 2014)

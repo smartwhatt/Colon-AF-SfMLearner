@@ -16,8 +16,12 @@ Run from AF-SfMLearner repo root:
         --seg_root        /path/to/segmentation_masks   # optional
 """
 
-import argparse
+import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import argparse
+from typing import Optional
 import numpy as np
 import torch
 import cv2
@@ -31,7 +35,7 @@ MIN_DEPTH = 0.001
 MAX_DEPTH = 0.100
 
 
-def compute_depth_metrics(gt: np.ndarray, pred: np.ndarray, mask: np.ndarray = None):
+def compute_depth_metrics(gt: np.ndarray, pred: np.ndarray, mask: Optional[np.ndarray] = None):
     """
     Standard depth estimation metrics.
     gt, pred: 1D arrays of valid depth values in metres.
@@ -116,6 +120,8 @@ def evaluate(args):
                 seg_path = os.path.join(args.seg_root, seq, f"{frame_idx:04d}_seg.png")
                 if os.path.exists(seg_path):
                     seg = cv2.imread(seg_path, cv2.IMREAD_GRAYSCALE)
+                    if seg is None:
+                        continue
                     seg = cv2.resize(
                         seg, (args.width, args.height), interpolation=cv2.INTER_NEAREST
                     )

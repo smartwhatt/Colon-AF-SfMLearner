@@ -1,6 +1,11 @@
 from __future__ import absolute_import, division, print_function
 
+import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 import cv2
 import numpy as np
 
@@ -16,7 +21,7 @@ import networks
 cv2.setNumThreads(0)  # This speeds up evaluation 5x on our unix systems (OpenCV 3.3.1)
 
 
-splits_dir = os.path.join(os.path.dirname(__file__), "splits")
+splits_dir = os.path.join(_ROOT, "splits")
 
 # Models which were trained with stereo supervision were trained with a nominal
 # baseline of 0.1 units. The KITTI rig has a baseline of 54cm. Therefore,

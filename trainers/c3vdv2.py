@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from datasets.c3vdv2_dataset import C3VDv2Dataset
-from c3vdv2_losses import scale_invariant_log_loss, pose_loss
+from .c3vdv2_losses import scale_invariant_log_loss, pose_loss
 from .base import BaseTrainer
 from .stage_one import StageOneTrainer
 from .stage_two import StageTwoTrainer

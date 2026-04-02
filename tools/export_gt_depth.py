@@ -1,6 +1,10 @@
 from __future__ import absolute_import, division, print_function
 
+import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import argparse
 import numpy as np
@@ -24,7 +28,7 @@ def export_gt_depths_SCARED():
                         choices=["endovis"])
     opt = parser.parse_args()
 
-    split_folder = os.path.join(os.path.dirname(__file__), "splits", opt.split)
+    split_folder = os.path.join(_ROOT, "splits", opt.split)
     lines = readlines(os.path.join(split_folder, "test_files.txt"))
     print("Exporting ground truth depths for {}".format(opt.split))
     i=0
@@ -44,6 +48,7 @@ def export_gt_depths_SCARED():
                 "image_02/data/groundtruth",
                 f_str)
             depth_gt = cv2.imread(gt_depth_path, 3)
+            assert depth_gt is not None, f"Failed to read {gt_depth_path}"
             depth_gt = depth_gt[:, :, 0]
             gt_depth = depth_gt[0:1024, :]
 

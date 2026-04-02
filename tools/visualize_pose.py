@@ -4,12 +4,14 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # load data from file
 # you replace this using with open
-gt_path = os.path.join(os.path.dirname(__file__), "splits", "endovis", "curve", "gt_poses.npz")
+gt_path = os.path.join(_ROOT, "splits", "endovis", "curve", "gt_poses.npz")
 gt_local_poses = np.load(gt_path, fix_imports=True, encoding='latin1')["data"]
 
-our_path = os.path.join(os.path.dirname(__file__), "splits", "endovis", "curve", "pose_our.npz")
+our_path = os.path.join(_ROOT, "splits", "endovis", "curve", "pose_our.npz")
 our_local_poses = np.load(our_path, fix_imports=True, encoding='latin1')["data"]
 
 
