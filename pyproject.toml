@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "opencv-python>=4.13.0.92",
+    "pydantic>=2.12.5",
     "scikit-image>=0.26.0",
+    "six>=1.17.0",
     "tensorboardx>=2.6.4",
     "torch>=2.10.0",
     "torchvision>=0.25.0",
