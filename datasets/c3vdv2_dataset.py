@@ -18,6 +18,7 @@ We undistort to a virtual perspective crop before feeding to AF-SfMLearner.
 import os
 import numpy as np
 import cv2
+cv2.setLogLevel(2)
 from PIL import Image
 import torch
 from torchvision import transforms
