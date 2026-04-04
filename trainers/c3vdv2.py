@@ -121,17 +121,23 @@ class _C3VDv2DataMixin(BaseTrainer):
             out[("color", f_id, 0)] = t
             out[("color_aug", f_id, 0)] = t  # augmentation applied in dataset
 
-        # Intrinsics: (B,3,3) → (B,4,4) homogeneous
+        # Intrinsics: normalised (B,3,3) → pixel-unit (B,4,4) per scale.
+        # K_norm[0,0]=fx/512, K_norm[0,2]=cx/512, etc.
+        # BackprojectDepth / Project3D expect K in pixel units at each scale,
+        # so multiply the normalised row-0 by W//2^s and row-1 by H//2^s.
         if "K" in batch:
-            K_33 = batch["K"].to(device)
-            B = K_33.shape[0]
-            K_44 = torch.zeros(B, 4, 4, device=device)
-            K_44[:, :3, :3] = K_33
-            K_44[:, 3, 3] = 1.0
-            inv_K = torch.linalg.inv(K_44)
+            K_norm = batch["K"].to(device)          # (B,3,3) normalised
+            B = K_norm.shape[0]
             for s in self.opt.scales:
+                h_s = self.opt.height // (2 ** s)
+                w_s = self.opt.width  // (2 ** s)
+                K_44 = torch.zeros(B, 4, 4, device=device)
+                K_44[:, :3, :3] = K_norm
+                K_44[:, 0, :] *= w_s
+                K_44[:, 1, :] *= h_s
+                K_44[:, 3, 3] = 1.0
                 out[("K", s)] = K_44
-                out[("inv_K", s)] = inv_K
+                out[("inv_K", s)] = torch.linalg.inv(K_44)
 
         # Multi-scale color for smoothness losses
         for scale in self.opt.scales[1:]:
@@ -194,6 +200,12 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
         self.ramp_epochs = getattr(options, "ramp_epochs", 8)
         self.w_depth = self.w_depth_start
         self.w_pose = self.w_pose_start
+
+        # Force correct depth range for C3VDv2 (1–100 mm).
+        # The default options use outdoor values (0.1–100 m) which would make
+        # disp_to_depth produce depths 1000× too large for this dataset.
+        options.min_depth = C3VD_MIN_DEPTH
+        options.max_depth = C3VD_MAX_DEPTH
 
         super().__init__(options)
 

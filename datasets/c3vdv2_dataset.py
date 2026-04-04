@@ -298,11 +298,14 @@ class C3VDv2Dataset(torch.utils.data.Dataset):
         axang_next, trans_next = pose_to_axisangle_translation(T_curr2next)
 
         # ---- Camera intrinsics (normalised to [0,1] as AF-SfM expects) --
-        H, W = self.target_size
+        # Normalise by the undistorted image dimensions (512×512), not the
+        # target_size.  The trainer multiplies K_norm by (W//2^s, H//2^s) at
+        # each scale to recover pixel-unit intrinsics; dividing by UNDISTORT
+        # dimensions ensures that multiplication gives the correctly scaled K.
         K_norm = np.array(
             [
-                [K_UNDISTORTED[0, 0] / W, 0, K_UNDISTORTED[0, 2] / W],
-                [0, K_UNDISTORTED[1, 1] / H, K_UNDISTORTED[1, 2] / H],
+                [K_UNDISTORTED[0, 0] / UNDISTORT_WIDTH,  0, K_UNDISTORTED[0, 2] / UNDISTORT_WIDTH],
+                [0, K_UNDISTORTED[1, 1] / UNDISTORT_HEIGHT, K_UNDISTORTED[1, 2] / UNDISTORT_HEIGHT],
                 [0, 0, 1],
             ],
             dtype=np.float32,
