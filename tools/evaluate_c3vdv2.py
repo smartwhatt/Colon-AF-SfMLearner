@@ -110,13 +110,30 @@ def evaluate(args):
                 raw = _cv2.imread(tiff_path, _cv2.IMREAD_ANYDEPTH)
                 print(f"[DEBUG] raw TIFF   dtype={raw.dtype}  shape={raw.shape}  min={raw.min()}  max={raw.max()}")
                 depth_decoded = _decode(tiff_path)
-                print(f"[DEBUG] after decode (m): min={depth_decoded.min():.6f}  max={depth_decoded.max():.6f}  nonzero={np.count_nonzero(depth_decoded)}")
+                print(f"[DEBUG] after decode (m): nonzero={np.count_nonzero(depth_decoded)}  max={depth_decoded.max():.4f}")
                 map1, map2 = _load_maps(args.undistort_maps)
-                print(f"[DEBUG] map1 shape={map1.shape}  dtype={map1.dtype}  min={map1.min():.1f}  max={map1.max():.1f}")
-                print(f"[DEBUG] map2 shape={map2.shape}  dtype={map2.dtype}  min={map2.min():.1f}  max={map2.max():.1f}")
-                depth_remapped = _cv2.remap(depth_decoded, map1, map2, interpolation=_cv2.INTER_NEAREST)
-                print(f"[DEBUG] after remap:  min={depth_remapped.min():.6f}  max={depth_remapped.max():.6f}  nonzero={np.count_nonzero(depth_remapped)}")
-                print(f"[DEBUG] gt_depth (from dataset, post-resize): min={gt_depth.min():.6f}  max={gt_depth.max():.6f}")
+                h_src, w_src = depth_decoded.shape
+                # Inspect centre pixel of the 512x512 output map
+                cy_m, cx_m = map1.shape[0] // 2, map1.shape[1] // 2
+                mx, my = map1[cy_m, cx_m], map2[cy_m, cx_m]
+                print(f"[DEBUG] centre map pixel → src x={mx:.1f}  y={my:.1f}  (src WxH={w_src}x{h_src})")
+                # Fraction of map coords that are within source bounds
+                valid_x = (map1 >= 0) & (map1 < w_src)
+                valid_y = (map2 >= 0) & (map2 < h_src)
+                both_valid = valid_x & valid_y
+                n = map1.size
+                print(f"[DEBUG] map coords in-bounds: x={valid_x.sum()}/{n}  y={valid_y.sum()}/{n}  both={both_valid.sum()}/{n}")
+                # Check depth at those valid locations
+                if both_valid.sum() > 0:
+                    xs = map1[both_valid].astype(int)
+                    ys = map2[both_valid].astype(int)
+                    vals = depth_decoded[ys, xs]
+                    print(f"[DEBUG] depth at valid map locs: min={vals.min():.4f}  max={vals.max():.4f}  nonzero={np.count_nonzero(vals)}")
+                else:
+                    print("[DEBUG] NO map coordinates fall within source image bounds — maps are miscalibrated")
+                # Also try plain resize (no remap) for comparison
+                depth_resized = _cv2.resize(depth_decoded, (args.width, args.height), interpolation=_cv2.INTER_NEAREST)
+                print(f"[DEBUG] plain resize (no remap): max={depth_resized.max():.4f}  nonzero={np.count_nonzero(depth_resized)}")
                 _depth_debug_done = True
 
             features = encoder(color_curr)
