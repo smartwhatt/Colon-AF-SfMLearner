@@ -46,7 +46,9 @@ def resnet_multiimage_input(num_layers, pretrained=False, num_input_images=1):
     model = ResNetMultiImageInput(block_type, blocks, num_input_images=num_input_images)
 
     if pretrained:
-        loaded = model_zoo.load_url(models.resnet.model_urls['resnet{}'.format(num_layers)])
+        weights_fn = {18: models.ResNet18_Weights.IMAGENET1K_V1,
+                      50: models.ResNet50_Weights.IMAGENET1K_V1}[num_layers]
+        loaded = models.__dict__['resnet{}'.format(num_layers)](weights=weights_fn).state_dict()
         loaded['conv1.weight'] = torch.cat(
             [loaded['conv1.weight']] * num_input_images, 1) / num_input_images
         model.load_state_dict(loaded)
@@ -73,7 +75,14 @@ class ResnetEncoder(nn.Module):
         if num_input_images > 1:
             self.encoder = resnet_multiimage_input(num_layers, pretrained, num_input_images)
         else:
-            self.encoder = resnets[num_layers](pretrained)
+            weights_map = {
+                18: models.ResNet18_Weights.IMAGENET1K_V1,
+                34: models.ResNet34_Weights.IMAGENET1K_V1,
+                50: models.ResNet50_Weights.IMAGENET1K_V1,
+                101: models.ResNet101_Weights.IMAGENET1K_V1,
+                152: models.ResNet152_Weights.IMAGENET1K_V1,
+            }
+            self.encoder = resnets[num_layers](weights=weights_map[num_layers] if pretrained else None)
 
         if num_layers > 34:
             self.num_ch_enc[1:] *= 4
