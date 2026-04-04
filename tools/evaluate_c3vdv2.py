@@ -15,13 +15,6 @@ Run from AF-SfMLearner repo root:
         --weights_folder  logs/c3vdv2_finetune/weights_29 \
         --seg_root        /path/to/segmentation_masks   # optional
 
-Note on undistortion maps
--------------------------
-GT depth is loaded with plain resize (no remap) because the pre-computed
-undistortion maps point outside the valid fisheye aperture — a symptom of
-incorrect Scaramuzza calibration parameters in compute_undistort_map.py.
-Re-run that script with the correct camera_intrinsics.txt to fix spatial
-alignment between the model's perspective crop and the GT depth.
 """
 
 import sys
@@ -36,7 +29,7 @@ import cv2
 from torch.utils.data import DataLoader
 
 from networks import ResnetEncoder, DepthDecoder
-from datasets.c3vdv2_dataset import C3VDv2Dataset, decode_depth_tiff
+from datasets.c3vdv2_dataset import C3VDv2Dataset
 
 
 MIN_DEPTH = 0.001
@@ -69,18 +62,6 @@ def compute_depth_metrics(gt: np.ndarray, pred: np.ndarray, mask: Optional[np.nd
     rmse_log = np.sqrt(np.mean((np.log(gt) - np.log(pred)) ** 2))
 
     return abs_rel, sq_rel, rmse, rmse_log, d1, d2, d3
-
-
-def load_gt_depth(data_root: str, seq: str, frame_idx: int, height: int, width: int) -> np.ndarray:
-    """
-    Load and resize GT depth without applying undistortion maps.
-    The pre-computed maps are miscalibrated (point outside the fisheye aperture),
-    so plain resize is used as a practical fallback.
-    """
-    tiff_path = os.path.join(data_root, seq, "depth", f"{frame_idx:04d}_depth.tiff")
-    depth = decode_depth_tiff(tiff_path)
-    depth = cv2.resize(depth, (width, height), interpolation=cv2.INTER_NEAREST)
-    return depth
 
 
 def evaluate(args):
@@ -117,11 +98,9 @@ def evaluate(args):
     with torch.no_grad():
         for batch in loader:
             color_curr = batch["color_curr"].to(device)
+            gt_depth = batch["gt_depth"].numpy().squeeze()  # H,W
             seq = batch["seq"][0]
             frame_idx = batch["frame_idx"].item()
-
-            # Load GT depth directly (bypass broken undistortion maps)
-            gt_depth = load_gt_depth(args.data_root, seq, frame_idx, args.height, args.width)
 
             features = encoder(color_curr)
             depth_out = depth_decoder(features)

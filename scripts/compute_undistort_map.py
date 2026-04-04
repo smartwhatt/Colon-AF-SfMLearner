@@ -56,21 +56,37 @@ def parse_intrinsics(txt_path: str) -> dict:
     return params
 
 
-def scaramuzza_world2cam(theta: np.ndarray, params: dict) -> np.ndarray:
+def scaramuzza_cam2world_z(rho: np.ndarray, params: dict) -> np.ndarray:
     """
-    Map an incident angle theta (radians, measured from optical axis) to
-    a radial distance r (pixels) using the Scaramuzza polynomial.
+    Cam-to-world polynomial: maps image radius rho (pixels from principal point)
+    to the unnormalised z-component of the 3D direction vector.
 
-    r = a0 + a2*theta^2 + a3*theta^3 + a4*theta^4
-    (a1 is conventionally 0 in Scaramuzza's model)
+    z = a0 + a1*rho + a2*rho^2 + a3*rho^3 + a4*rho^4
+
+    The full (unnormalised) direction for an image point at radius rho and
+    azimuth phi is  (rho*cos(phi), rho*sin(phi), z).
     """
     a0 = params["a0"]
     a1 = params.get("a1", 0.0)
     a2 = params.get("a2", 0.0)
     a3 = params.get("a3", 0.0)
     a4 = params.get("a4", 0.0)
-    r = a0 + a1 * theta + a2 * theta**2 + a3 * theta**3 + a4 * theta**4
-    return r
+    return a0 + a1 * rho + a2 * rho**2 + a3 * rho**3 + a4 * rho**4
+
+
+def _build_theta_to_rho_lut(params: dict, max_rho: float = 700.0, n: int = 20000):
+    """
+    Build a lookup table that inverts the cam-to-world polynomial:
+      given an incident angle theta, return the corresponding image radius rho.
+
+    Strategy: sample rho densely, compute theta = arctan2(rho, z(rho)),
+    then use np.interp for the inverse mapping.
+    """
+    rho_samples = np.linspace(0.0, max_rho, n)
+    z_samples = scaramuzza_cam2world_z(rho_samples, params)
+    # theta = angle from optical axis; z must be positive for the forward hemisphere
+    theta_samples = np.arctan2(rho_samples, np.maximum(z_samples, 1e-6))
+    return theta_samples, rho_samples
 
 
 def compute_undistort_maps(
@@ -83,6 +99,10 @@ def compute_undistort_maps(
     Build OpenCV-compatible remap tables (map1, map2) that convert a virtual
     perspective image of size (out_w x out_h) with field-of-view out_fov_deg
     back to source omnidirectional pixel coordinates.
+
+    The Scaramuzza a0..a4 coefficients are treated as the cam-to-world
+    polynomial (image radius → unnormalised z), which is the standard output
+    of OCamCalib.  The world-to-cam mapping is obtained by numerical inversion.
 
     Returns:
         map1, map2: float32 arrays of shape (out_h, out_w) — source x,y coords
@@ -110,21 +130,22 @@ def compute_undistort_maps(
     # Direction vectors in camera coordinates (z forward)
     x_c = (uu - cx_out) / f_out
     y_c = (vv - cy_out) / f_out
-    z_c = np.ones_like(x_c)
 
     # Incident angle from optical axis
     r_3d = np.sqrt(x_c**2 + y_c**2)
-    theta = np.arctan2(r_3d, z_c)
+    theta = np.arctan2(r_3d, np.ones_like(r_3d))  # z_c = 1
 
-    # Radial distance in source image (Scaramuzza polynomial)
-    r_src = scaramuzza_world2cam(theta, params)
+    # Invert cam-to-world polynomial: theta → rho (image radius in source)
+    theta_lut, rho_lut = _build_theta_to_rho_lut(params)
+    r_src = np.interp(theta, theta_lut, rho_lut).astype(np.float32)
 
-    # Normalised 2D direction in source image plane
+    # Azimuthal direction in source image plane
+    # At the optical centre (r_3d=0) phi is undefined; r_src=0 so it doesn't matter.
     phi = np.arctan2(y_c, x_c)
-    x_norm = np.cos(phi)
-    y_norm = np.sin(phi)
+    x_norm = np.where(r_3d > 0, np.cos(phi), 0.0)
+    y_norm = np.where(r_3d > 0, np.sin(phi), 0.0)
 
-    # Apply affine stretch (c, d, e parameters)
+    # Apply affine stretch (c, d, e parameters) and shift to principal point
     x_src = r_src * (x_norm * c + y_norm * d) + cx_src
     y_src = r_src * (x_norm * e + y_norm) + cy_src
 
