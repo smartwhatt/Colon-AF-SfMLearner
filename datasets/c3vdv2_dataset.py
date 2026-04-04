@@ -252,11 +252,17 @@ class C3VDv2Dataset(torch.utils.data.Dataset):
 
         if self.augment:
             # Apply the SAME jitter to all three frames (consistency)
-            jitter_fn = transforms.ColorJitter.get_params(
+            fn_idx, brightness, contrast, saturation, hue = transforms.ColorJitter.get_params(
                 self.color_jitter.brightness,
                 self.color_jitter.contrast,
                 self.color_jitter.saturation,
                 self.color_jitter.hue,
+            )
+            jitter_fn = transforms.ColorJitter(
+                brightness=(brightness, brightness),
+                contrast=(contrast, contrast),
+                saturation=(saturation, saturation),
+                hue=(hue, hue),
             )
             img_prev = np.array(jitter_fn(Image.fromarray(img_prev)))
             img_curr = np.array(jitter_fn(Image.fromarray(img_curr)))
