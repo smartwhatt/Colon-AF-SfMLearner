@@ -1,23 +1,22 @@
 # =============================================================================
 # AF-SfMLearner C3VDv2 Training Image
-# Base: NVIDIA CUDA 11.8 + cuDNN 8, Ubuntu 22.04 
-# PyTorch: 2.x (compatible with the repo's current pyproject.toml) 
+# Base: PyTorch 2.8.0 with CUDA 12.9 and cuDNN 9
 # 
 # Build: 
-# docker build -t af-sfmlearner:c3vdv2 . 
+# docker build -t smartwatt/af-sfmlearner . 
 # 
 # Run (interactive): 
 # docker run --gpus all --rm -it \ 
 # -v /path/to/C3VDv2:/data/C3VDv2 \ 
 # -v /path/to/repo:/workspace \ 
 # -v /path/to/logs:/workspace/logs \ 
-# af-sfmlearner:c3vdv2 bash # 
+# smartwatt/af-sfmlearner bash # 
 # Run (direct fine-tuning): 
 # docker run --gpus all --rm \ 
 # -v /path/to/C3VDv2:/data/C3VDv2 \ 
 # -v /path/to/repo:/workspace \ 
 # -v /path/to/logs:/workspace/logs \ 
-# af-sfmlearner:c3vdv2 \ # bash scripts/run_finetune_c3vdv2.sh 
+# smartwatt/af-sfmlearner \ # bash scripts/run_finetune_c3vdv2.sh 
 #
 # =============================================================================
 FROM --platform=linux/amd64 pytorch/pytorch:2.8.0-cuda12.9-cudnn9-runtime
