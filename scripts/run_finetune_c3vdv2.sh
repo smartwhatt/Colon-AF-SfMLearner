@@ -137,7 +137,7 @@ run_stage1() {
         --scheduler_step_size "$S1_LR_STEP" \
         --height              256 \
         --width               320 \
-        --num_scales          4 \
+        --scales              0 1 2 3 \
         --save_frequency      5 \
         $LOAD_WEIGHTS_ARG
 
@@ -176,7 +176,7 @@ run_stage2() {
         --scheduler_step_size "$S2_LR_STEP" \
         --height              256 \
         --width               320 \
-        --num_scales          4 \
+        --scales              0 1 2 3 \
         --save_frequency      5 \
         --w_depth_start       "$W_DEPTH_START" \
         --w_depth_end         "$W_DEPTH_END" \
