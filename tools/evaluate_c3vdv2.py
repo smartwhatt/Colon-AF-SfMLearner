@@ -158,7 +158,10 @@ def evaluate(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_root", required=True)
-    parser.add_argument("--split_file", required=True)
+    parser.add_argument("--split_file", default=None,
+                        help="Path to split txt file. Mutually exclusive with --split.")
+    parser.add_argument("--split", default=None,
+                        help="Split name (e.g. c3vdv2); resolves to splits/<split>/test.txt")
     parser.add_argument("--undistort_maps", required=True)
     parser.add_argument("--weights_folder", required=True)
     parser.add_argument(
@@ -168,4 +171,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--height", type=int, default=256)
     parser.add_argument("--width", type=int, default=320)
-    evaluate(parser.parse_args())
+    args = parser.parse_args()
+
+    if args.split_file is None and args.split is None:
+        parser.error("one of --split_file or --split is required")
+    if args.split_file is None:
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        args.split_file = os.path.join(repo_root, "splits", args.split, "test.txt")
+
+    evaluate(args)
