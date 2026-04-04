@@ -116,7 +116,7 @@ run_stage1() {
     echo "  Output:  $S1_FINAL_WEIGHTS"
 
     # Build load_weights_folder arg — only if SCARED weights exist
-    LOAD_WEIGHTS_ARG=""
+    LOAD_WEIGHTS_ARG="./model/pretrained/scared_stage1/  (not found, training from scratch)"
     if [ -n "$SCARED_STAGE1_WEIGHTS" ] && [ -d "$SCARED_STAGE1_WEIGHTS" ]; then
         LOAD_WEIGHTS_ARG="--load_weights_folder $SCARED_STAGE1_WEIGHTS"
         echo "  Init:    $SCARED_STAGE1_WEIGHTS  (SCARED Stage 1 pretrained)"
