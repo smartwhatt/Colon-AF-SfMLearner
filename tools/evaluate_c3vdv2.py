@@ -103,7 +103,15 @@ def evaluate(args):
             frame_idx = batch["frame_idx"].item()
 
             if not _depth_debug_done:
+                import cv2 as _cv2
+                tiff_path = os.path.join(args.data_root, seq, "depth", f"{frame_idx:04d}_depth.tiff")
                 print(f"\n[DEBUG] First batch: seq={seq}, frame={frame_idx}")
+                print(f"[DEBUG] depth path: {tiff_path}  exists={os.path.exists(tiff_path)}")
+                raw = _cv2.imread(tiff_path, _cv2.IMREAD_ANYDEPTH)
+                if raw is not None:
+                    print(f"[DEBUG] raw TIFF   dtype={raw.dtype}  min={raw.min():.6f}  max={raw.max():.6f}  mean={raw.mean():.6f}")
+                else:
+                    print("[DEBUG] raw TIFF: cv2.imread returned None (file missing or unreadable)")
                 print(f"[DEBUG] gt_depth  shape={gt_depth.shape}  dtype={gt_depth.dtype}")
                 print(f"[DEBUG] gt_depth  min={gt_depth.min():.6f}  max={gt_depth.max():.6f}  mean={gt_depth[gt_depth>0].mean() if (gt_depth>0).any() else float('nan'):.6f}")
                 print(f"[DEBUG] valid pixels (>{MIN_DEPTH:.3f} and <{MAX_DEPTH:.3f} m): {((gt_depth > MIN_DEPTH) & (gt_depth < MAX_DEPTH)).sum()} / {gt_depth.size}")
