@@ -166,7 +166,7 @@ class BaseTrainer(ABC):
         )
         self.val_loader = DataLoader(
             val_dataset, self.opt.batch_size, False,
-            num_workers=1, pin_memory=True, drop_last=True,
+            num_workers=1, pin_memory=True, drop_last=False,
         )
         self.val_iter = iter(self.val_loader)
         self.num_total_steps = (
