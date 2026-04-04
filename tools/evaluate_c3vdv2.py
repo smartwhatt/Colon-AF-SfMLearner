@@ -104,17 +104,19 @@ def evaluate(args):
 
             if not _depth_debug_done:
                 import cv2 as _cv2
+                from datasets.c3vdv2_dataset import decode_depth_tiff as _decode, load_undistort_maps as _load_maps
                 tiff_path = os.path.join(args.data_root, seq, "depth", f"{frame_idx:04d}_depth.tiff")
                 print(f"\n[DEBUG] First batch: seq={seq}, frame={frame_idx}")
-                print(f"[DEBUG] depth path: {tiff_path}  exists={os.path.exists(tiff_path)}")
                 raw = _cv2.imread(tiff_path, _cv2.IMREAD_ANYDEPTH)
-                if raw is not None:
-                    print(f"[DEBUG] raw TIFF   dtype={raw.dtype}  min={raw.min():.6f}  max={raw.max():.6f}  mean={raw.mean():.6f}")
-                else:
-                    print("[DEBUG] raw TIFF: cv2.imread returned None (file missing or unreadable)")
-                print(f"[DEBUG] gt_depth  shape={gt_depth.shape}  dtype={gt_depth.dtype}")
-                print(f"[DEBUG] gt_depth  min={gt_depth.min():.6f}  max={gt_depth.max():.6f}  mean={gt_depth[gt_depth>0].mean() if (gt_depth>0).any() else float('nan'):.6f}")
-                print(f"[DEBUG] valid pixels (>{MIN_DEPTH:.3f} and <{MAX_DEPTH:.3f} m): {((gt_depth > MIN_DEPTH) & (gt_depth < MAX_DEPTH)).sum()} / {gt_depth.size}")
+                print(f"[DEBUG] raw TIFF   dtype={raw.dtype}  shape={raw.shape}  min={raw.min()}  max={raw.max()}")
+                depth_decoded = _decode(tiff_path)
+                print(f"[DEBUG] after decode (m): min={depth_decoded.min():.6f}  max={depth_decoded.max():.6f}  nonzero={np.count_nonzero(depth_decoded)}")
+                map1, map2 = _load_maps(args.undistort_maps)
+                print(f"[DEBUG] map1 shape={map1.shape}  dtype={map1.dtype}  min={map1.min():.1f}  max={map1.max():.1f}")
+                print(f"[DEBUG] map2 shape={map2.shape}  dtype={map2.dtype}  min={map2.min():.1f}  max={map2.max():.1f}")
+                depth_remapped = _cv2.remap(depth_decoded, map1, map2, interpolation=_cv2.INTER_NEAREST)
+                print(f"[DEBUG] after remap:  min={depth_remapped.min():.6f}  max={depth_remapped.max():.6f}  nonzero={np.count_nonzero(depth_remapped)}")
+                print(f"[DEBUG] gt_depth (from dataset, post-resize): min={gt_depth.min():.6f}  max={gt_depth.max():.6f}")
                 _depth_debug_done = True
 
             features = encoder(color_curr)
