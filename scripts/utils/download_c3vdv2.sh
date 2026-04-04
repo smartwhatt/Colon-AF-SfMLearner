@@ -27,9 +27,18 @@ if [ -z "$metadata" ]; then
 fi
 
 # ---- PARSE FILES ----
-files=$(echo "$metadata" | jq -r '
-.data.latestVersion.files[] |
-"\(.dataFile.id)|\(.label)|\(.dataFile.filesize)"')
+files=$(python3 - <<EOF
+import json, sys
+
+data = json.load(sys.stdin)
+
+for f in data["data"]["latestVersion"]["files"]:
+    file_id = f["dataFile"]["id"]
+    name = f["label"]
+    size = f["dataFile"]["filesize"]
+    print(f"{file_id}|{name}|{size}")
+EOF
+<<< "$metadata")
 
 total_size=0
 index=0
