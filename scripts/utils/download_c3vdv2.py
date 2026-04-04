@@ -18,8 +18,17 @@ BASE_URL = "https://archive.data.jhu.edu"
 # -----------------------------
 def fetch_metadata():
     url = f"{BASE_URL}/api/datasets/:persistentId?persistentId=doi:{DOI}"
+
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json"
+        }
+    )
+
     try:
-        with urllib.request.urlopen(url) as response:
+        with urllib.request.urlopen(req) as response:
             data = response.read()
             return json.loads(data)
     except Exception as e:
@@ -42,14 +51,22 @@ def format_size(bytes_size):
 def download_file(file_id, output_path):
     try:
         url = f"{BASE_URL}/api/access/datafile/{file_id}"
-        with urllib.request.urlopen(url) as response, open(output_path, "wb") as out:
+
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+
+        with urllib.request.urlopen(req) as response, open(output_path, "wb") as out:
             shutil.copyfileobj(response, out)
+
     except urllib.error.HTTPError as e:
         print(f"HTTP Error: {e}")
         return False
     except Exception as e:
         print(f"Download failed: {e}")
         return False
+
     return True
 
 
