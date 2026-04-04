@@ -43,7 +43,7 @@ GPU="${GPU:-0}"
 
 # Optional: path to SCARED pretrained weights to warm-start Stage 1.
 # Set to "" to train Stage 1 from scratch (takes longer).
-SCARED_STAGE1_WEIGHTS="${SCARED_STAGE1_WEIGHTS:-pretrained/scared_stage1/}"
+SCARED_STAGE1_WEIGHTS="${SCARED_STAGE1_WEIGHTS:-./model/pretrained/scared_stage1/}" 
 
 # Stage 1 settings (paper Section 4.2)
 S1_EPOCHS="${S1_EPOCHS:-20}"
@@ -116,7 +116,7 @@ run_stage1() {
     echo "  Output:  $S1_FINAL_WEIGHTS"
 
     # Build load_weights_folder arg — only if SCARED weights exist
-    LOAD_WEIGHTS_ARG="./model/pretrained/scared_stage1/  (not found, training from scratch)"
+    LOAD_WEIGHTS_ARG=""
     if [ -n "$SCARED_STAGE1_WEIGHTS" ] && [ -d "$SCARED_STAGE1_WEIGHTS" ]; then
         LOAD_WEIGHTS_ARG="--load_weights_folder $SCARED_STAGE1_WEIGHTS"
         echo "  Init:    $SCARED_STAGE1_WEIGHTS  (SCARED Stage 1 pretrained)"
