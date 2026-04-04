@@ -6,13 +6,13 @@
 # docker build -t smartwatt/af-sfmlearner . 
 # 
 # Run (interactive): 
-# docker run --gpus all --rm -it \ 
+# docker run --gpus device=1 --rm -it \ 
 # -v /path/to/C3VDv2:/data/C3VDv2 \ 
 # -v /path/to/repo:/workspace \ 
 # -v /path/to/logs:/workspace/logs \ 
 # smartwatt/af-sfmlearner bash # 
 # Run (direct fine-tuning): 
-# docker run --gpus all --rm \ 
+# docker run --gpus device=1 --rm \ 
 # -v /path/to/C3VDv2:/data/C3VDv2 \ 
 # -v /path/to/repo:/workspace \ 
 # -v /path/to/logs:/workspace/logs \ 
