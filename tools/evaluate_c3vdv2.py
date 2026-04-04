@@ -71,7 +71,8 @@ def evaluate(args):
     depth_decoder = DepthDecoder(encoder.num_ch_enc, scales=range(4))
 
     encoder.load_state_dict(
-        torch.load(os.path.join(args.weights_folder, "encoder.pth"), map_location="cpu")
+        torch.load(os.path.join(args.weights_folder, "encoder.pth"), map_location="cpu"),
+        strict=False,
     )
     depth_decoder.load_state_dict(
         torch.load(os.path.join(args.weights_folder, "depth.pth"), map_location="cpu")
