@@ -30,16 +30,6 @@ from trainers import TRAINERS
 
 if __name__ == "__main__":
     options = MonodepthOptions()
-    options.parser.add_argument(
-        "--mode",
-        type=str,
-        choices=list(TRAINERS.keys()),
-        default="stage2",
-        help=(
-            "Training mode: stage1 | stage2 | end_to_end | "
-            "c3vdv2_stage1 | c3vdv2_stage2"
-        ),
-    )
     opt = options.parse()
 
     trainer_cls = TRAINERS[opt.mode]
