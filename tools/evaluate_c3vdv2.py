@@ -94,12 +94,20 @@ def evaluate(args):
     all_metrics = []
     polyp_metrics = []  # filled if seg_root provided
 
+    _depth_debug_done = False
     with torch.no_grad():
         for batch in loader:
             color_curr = batch["color_curr"].to(device)
             gt_depth = batch["gt_depth"].numpy().squeeze()  # H,W
             seq = batch["seq"][0]
             frame_idx = batch["frame_idx"].item()
+
+            if not _depth_debug_done:
+                print(f"\n[DEBUG] First batch: seq={seq}, frame={frame_idx}")
+                print(f"[DEBUG] gt_depth  shape={gt_depth.shape}  dtype={gt_depth.dtype}")
+                print(f"[DEBUG] gt_depth  min={gt_depth.min():.6f}  max={gt_depth.max():.6f}  mean={gt_depth[gt_depth>0].mean() if (gt_depth>0).any() else float('nan'):.6f}")
+                print(f"[DEBUG] valid pixels (>{MIN_DEPTH:.3f} and <{MAX_DEPTH:.3f} m): {((gt_depth > MIN_DEPTH) & (gt_depth < MAX_DEPTH)).sum()} / {gt_depth.size}")
+                _depth_debug_done = True
 
             features = encoder(color_curr)
             depth_out = depth_decoder(features)
@@ -132,10 +140,18 @@ def evaluate(args):
                         polyp_metrics.append(pm)
 
     # ---- Report ----------------------------------------------------------
+    print("\n========== C3VDv2 Depth Evaluation ==========")
+    print(f"  Samples in split:  {len(dataset)}")
+    print(f"  Samples evaluated: {len(all_metrics)}")
+    if len(all_metrics) == 0:
+        print("  [WARNING] No samples were evaluated.")
+        print("  Possible causes:")
+        print("    - split file is empty (re-run generate_splits.py with --test_segs)")
+        print("    - all frames failed the depth validity mask (depth out of 1–100 mm range)")
+        print("==============================================\n")
+        return
     metrics_arr = np.array(all_metrics)
     mean = metrics_arr.mean(axis=0)
-    print("\n========== C3VDv2 Depth Evaluation ==========")
-    print(f"  Samples evaluated: {len(all_metrics)}")
     print(f"  AbsRel:   {mean[0]:.4f}")
     print(f"  SqRel:    {mean[1]:.4f}")
     print(f"  RMSE(m):  {mean[2]:.4f}   ({mean[2]*1000:.2f} mm)")

@@ -23,7 +23,7 @@ import torch
 from torchvision import transforms
 
 
-os.environ["OPENCV_LOG_LEVEL"] = "ERROR" 
+cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
 # ---------------------------------------------------------------------------
 # Omnidirectional → perspective undistortion helpers
 # ---------------------------------------------------------------------------
