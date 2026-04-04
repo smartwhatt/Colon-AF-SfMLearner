@@ -102,7 +102,7 @@ def load_poses(pose_txt: str) -> list:
     poses = []
     with open(pose_txt, "r") as f:
         for line in f:
-            vals = list(map(float, line.strip().split()))
+            vals = list(map(float, line.strip().replace(',', ' ').split()))
             if len(vals) == 16:
                 T = np.array(vals, dtype=np.float64).reshape(4, 4)
                 poses.append(T)
