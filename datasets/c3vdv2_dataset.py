@@ -18,12 +18,12 @@ We undistort to a virtual perspective crop before feeding to AF-SfMLearner.
 import os
 import numpy as np
 import cv2
+from PIL import Image
 import torch
 from torchvision import transforms
 
-os.environ["OPENCV_LOG_LEVEL"] = "ERROR"                                                                                                from PIL import Image
 
-
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR" 
 # ---------------------------------------------------------------------------
 # Omnidirectional → perspective undistortion helpers
 # ---------------------------------------------------------------------------
