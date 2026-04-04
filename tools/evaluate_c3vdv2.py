@@ -14,6 +14,14 @@ Run from AF-SfMLearner repo root:
         --undistort_maps  /path/to/undistort_maps \
         --weights_folder  logs/c3vdv2_finetune/weights_29 \
         --seg_root        /path/to/segmentation_masks   # optional
+
+Note on undistortion maps
+-------------------------
+GT depth is loaded with plain resize (no remap) because the pre-computed
+undistortion maps point outside the valid fisheye aperture — a symptom of
+incorrect Scaramuzza calibration parameters in compute_undistort_map.py.
+Re-run that script with the correct camera_intrinsics.txt to fix spatial
+alignment between the model's perspective crop and the GT depth.
 """
 
 import sys
@@ -28,7 +36,7 @@ import cv2
 from torch.utils.data import DataLoader
 
 from networks import ResnetEncoder, DepthDecoder
-from datasets.c3vdv2_dataset import C3VDv2Dataset
+from datasets.c3vdv2_dataset import C3VDv2Dataset, decode_depth_tiff
 
 
 MIN_DEPTH = 0.001
@@ -63,6 +71,18 @@ def compute_depth_metrics(gt: np.ndarray, pred: np.ndarray, mask: Optional[np.nd
     return abs_rel, sq_rel, rmse, rmse_log, d1, d2, d3
 
 
+def load_gt_depth(data_root: str, seq: str, frame_idx: int, height: int, width: int) -> np.ndarray:
+    """
+    Load and resize GT depth without applying undistortion maps.
+    The pre-computed maps are miscalibrated (point outside the fisheye aperture),
+    so plain resize is used as a practical fallback.
+    """
+    tiff_path = os.path.join(data_root, seq, "depth", f"{frame_idx:04d}_depth.tiff")
+    depth = decode_depth_tiff(tiff_path)
+    depth = cv2.resize(depth, (width, height), interpolation=cv2.INTER_NEAREST)
+    return depth
+
+
 def evaluate(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -80,7 +100,7 @@ def evaluate(args):
     encoder.eval().to(device)
     depth_decoder.eval().to(device)
 
-    # ---- Dataset ---------------------------------------------------------
+    # ---- Dataset (used for colour frames and metadata only) --------------
     dataset = C3VDv2Dataset(
         data_root=args.data_root,
         split_file=args.split_file,
@@ -92,49 +112,16 @@ def evaluate(args):
 
     # ---- Evaluation loop -------------------------------------------------
     all_metrics = []
-    polyp_metrics = []  # filled if seg_root provided
+    polyp_metrics = []
 
-    _depth_debug_done = False
     with torch.no_grad():
         for batch in loader:
             color_curr = batch["color_curr"].to(device)
-            gt_depth = batch["gt_depth"].numpy().squeeze()  # H,W
             seq = batch["seq"][0]
             frame_idx = batch["frame_idx"].item()
 
-            if not _depth_debug_done:
-                import cv2 as _cv2
-                from datasets.c3vdv2_dataset import decode_depth_tiff as _decode, load_undistort_maps as _load_maps
-                tiff_path = os.path.join(args.data_root, seq, "depth", f"{frame_idx:04d}_depth.tiff")
-                print(f"\n[DEBUG] First batch: seq={seq}, frame={frame_idx}")
-                raw = _cv2.imread(tiff_path, _cv2.IMREAD_ANYDEPTH)
-                print(f"[DEBUG] raw TIFF   dtype={raw.dtype}  shape={raw.shape}  min={raw.min()}  max={raw.max()}")
-                depth_decoded = _decode(tiff_path)
-                print(f"[DEBUG] after decode (m): nonzero={np.count_nonzero(depth_decoded)}  max={depth_decoded.max():.4f}")
-                map1, map2 = _load_maps(args.undistort_maps)
-                h_src, w_src = depth_decoded.shape
-                # Inspect centre pixel of the 512x512 output map
-                cy_m, cx_m = map1.shape[0] // 2, map1.shape[1] // 2
-                mx, my = map1[cy_m, cx_m], map2[cy_m, cx_m]
-                print(f"[DEBUG] centre map pixel → src x={mx:.1f}  y={my:.1f}  (src WxH={w_src}x{h_src})")
-                # Fraction of map coords that are within source bounds
-                valid_x = (map1 >= 0) & (map1 < w_src)
-                valid_y = (map2 >= 0) & (map2 < h_src)
-                both_valid = valid_x & valid_y
-                n = map1.size
-                print(f"[DEBUG] map coords in-bounds: x={valid_x.sum()}/{n}  y={valid_y.sum()}/{n}  both={both_valid.sum()}/{n}")
-                # Check depth at those valid locations
-                if both_valid.sum() > 0:
-                    xs = map1[both_valid].astype(int)
-                    ys = map2[both_valid].astype(int)
-                    vals = depth_decoded[ys, xs]
-                    print(f"[DEBUG] depth at valid map locs: min={vals.min():.4f}  max={vals.max():.4f}  nonzero={np.count_nonzero(vals)}")
-                else:
-                    print("[DEBUG] NO map coordinates fall within source image bounds — maps are miscalibrated")
-                # Also try plain resize (no remap) for comparison
-                depth_resized = _cv2.resize(depth_decoded, (args.width, args.height), interpolation=_cv2.INTER_NEAREST)
-                print(f"[DEBUG] plain resize (no remap): max={depth_resized.max():.4f}  nonzero={np.count_nonzero(depth_resized)}")
-                _depth_debug_done = True
+            # Load GT depth directly (bypass broken undistortion maps)
+            gt_depth = load_gt_depth(args.data_root, seq, frame_idx, args.height, args.width)
 
             features = encoder(color_curr)
             depth_out = depth_decoder(features)
@@ -171,10 +158,7 @@ def evaluate(args):
     print(f"  Samples in split:  {len(dataset)}")
     print(f"  Samples evaluated: {len(all_metrics)}")
     if len(all_metrics) == 0:
-        print("  [WARNING] No samples were evaluated.")
-        print("  Possible causes:")
-        print("    - split file is empty (re-run generate_splits.py with --test_segs)")
-        print("    - all frames failed the depth validity mask (depth out of 1–100 mm range)")
+        print("  [WARNING] No samples passed the depth validity mask.")
         print("==============================================\n")
         return
     metrics_arr = np.array(all_metrics)
