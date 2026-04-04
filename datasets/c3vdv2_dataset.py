@@ -217,12 +217,11 @@ class C3VDv2Dataset(torch.utils.data.Dataset):
         return depth  # HxW float32 in metres
 
     def _load_occlusion(self, seq: str, idx: int) -> np.ndarray:
-        path = os.path.join(
-            self.data_root, seq, "occlusions", f"{idx:04d}_occlusion.tiff"
-        )
-        occ = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-        if occ is None:
+        base = os.path.join(self.data_root, seq, "occlusions", f"{idx:04d}_occlusion")
+        path = next((p for p in (base + ".tiff", base + ".png") if os.path.exists(p)), None)
+        if path is None:
             return None
+        occ = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
         occ = cv2.remap(occ, self.map1, self.map2, interpolation=cv2.INTER_NEAREST)
         occ = cv2.resize(
             occ,
