@@ -21,18 +21,15 @@ echo ""
 curl -s -f "$BASE_URL/api/datasets/:persistentId?persistentId=doi:$DOI"
 
 # ---- PARSE FILES ----
-files=$(python3 - <<EOF
+files=$(echo "$metadata" | python3 - <<'EOF'
 import json, sys
 
 data = json.load(sys.stdin)
 
 for f in data["data"]["latestVersion"]["files"]:
-    file_id = f["dataFile"]["id"]
-    name = f["label"]
-    size = f["dataFile"]["filesize"]
-    print(f"{file_id}|{name}|{size}")
+    print(f"{f['dataFile']['id']}|{f['label']}|{f['dataFile']['filesize']}")
 EOF
-<<< "$metadata")
+)
 
 total_size=0
 index=0
