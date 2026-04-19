@@ -37,10 +37,18 @@ if TYPE_CHECKING:
     from options import TrainingConfig
 
 from layers import (
-    SSIM, SpatialTransformer, get_occu_mask_backward, get_occu_mask_bidirection,
-    BackprojectDepth, Project3D, optical_flow,
-    disp_to_depth, transformation_from_parameters,
-    get_smooth_loss, get_smooth_bright, ncc_loss,
+    SSIM,
+    SpatialTransformer,
+    get_occu_mask_backward,
+    get_occu_mask_bidirection,
+    BackprojectDepth,
+    Project3D,
+    optical_flow,
+    disp_to_depth,
+    transformation_from_parameters,
+    get_smooth_loss,
+    get_smooth_bright,
+    ncc_loss,
 )
 from utils import readlines, sec_to_hm_str, normalize_image
 from torch.utils.data import DataLoader
@@ -83,6 +91,12 @@ class BaseTrainer(ABC):
         self.parameters_to_train = []
         self.build_models()
 
+        # if there are multiple gpus and model is not on cpu, use DataParallel
+        if torch.cuda.device_count() > 1 and not self.opt.no_cuda:
+            print("Using {} GPUs for training".format(torch.cuda.device_count()))
+            for model in self.models.values():
+                model = torch.nn.DataParallel(model)
+
         # ── Optimizers ────────────────────────────────────────────────────────
         self.build_optimizers()
 
@@ -106,8 +120,13 @@ class BaseTrainer(ABC):
         self._setup_geometry()
 
         self.depth_metric_names = [
-            "de/abs_rel", "de/sq_rel", "de/rms", "de/log_rms",
-            "da/a1", "da/a2", "da/a3",
+            "de/abs_rel",
+            "de/sq_rel",
+            "de/rms",
+            "de/log_rms",
+            "da/a1",
+            "da/a2",
+            "da/a3",
         ]
         self.save_opts()
 
@@ -144,44 +163,67 @@ class BaseTrainer(ABC):
         dataset_cls = DATASET_REGISTRY[self.opt.dataset]
         fpath = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
-            "splits", self.opt.split, "{}_files.txt",
+            "splits",
+            self.opt.split,
+            "{}_files.txt",
         )
         train_filenames = readlines(fpath.format("train"))
         val_filenames = readlines(fpath.format("val"))
         img_ext = ".png"
 
         train_dataset = dataset_cls(
-            self.opt.data_path, train_filenames,
-            self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=True, img_ext=img_ext,
+            self.opt.data_path,
+            train_filenames,
+            self.opt.height,
+            self.opt.width,
+            self.opt.frame_ids,
+            4,
+            is_train=True,
+            img_ext=img_ext,
         )
         val_dataset = dataset_cls(
-            self.opt.data_path, val_filenames,
-            self.opt.height, self.opt.width,
-            self.opt.frame_ids, 4, is_train=False, img_ext=img_ext,
+            self.opt.data_path,
+            val_filenames,
+            self.opt.height,
+            self.opt.width,
+            self.opt.frame_ids,
+            4,
+            is_train=False,
+            img_ext=img_ext,
         )
         self.train_loader = DataLoader(
-            train_dataset, self.opt.batch_size, True,
-            num_workers=self.opt.num_workers, pin_memory=True, drop_last=True,
+            train_dataset,
+            self.opt.batch_size,
+            True,
+            num_workers=self.opt.num_workers,
+            pin_memory=True,
+            drop_last=True,
         )
         self.val_loader = DataLoader(
-            val_dataset, self.opt.batch_size, False,
-            num_workers=1, pin_memory=True, drop_last=False,
+            val_dataset,
+            self.opt.batch_size,
+            False,
+            num_workers=1,
+            pin_memory=True,
+            drop_last=False,
         )
         self.val_iter = iter(self.val_loader)
         self.num_total_steps = (
             len(train_dataset) // self.opt.batch_size * self.opt.num_epochs
         )
         print("Using split:\n  ", self.opt.split)
-        print("There are {:d} training items and {:d} validation items\n".format(
-            len(train_dataset), len(val_dataset)
-        ))
+        print(
+            "There are {:d} training items and {:d} validation items\n".format(
+                len(train_dataset), len(val_dataset)
+            )
+        )
 
     def load_model(self):
         """Load weights into self.models. Default: no freezing."""
         self.opt.load_weights_folder = os.path.expanduser(self.opt.load_weights_folder)
-        assert os.path.isdir(self.opt.load_weights_folder), \
-            "Cannot find folder {}".format(self.opt.load_weights_folder)
+        assert os.path.isdir(
+            self.opt.load_weights_folder
+        ), "Cannot find folder {}".format(self.opt.load_weights_folder)
         print("loading model from folder {}".format(self.opt.load_weights_folder))
 
         for n in self.opt.models_to_load:
@@ -191,7 +233,9 @@ class BaseTrainer(ABC):
             path = os.path.join(self.opt.load_weights_folder, "{}.pth".format(n))
             model_dict = self.models[n].state_dict()
             pretrained_dict = torch.load(path, map_location=self.device)
-            pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+            pretrained_dict = {
+                k: v for k, v in pretrained_dict.items() if k in model_dict
+            }
             model_dict.update(pretrained_dict)
             self.models[n].load_state_dict(model_dict)
 
@@ -260,8 +304,10 @@ class BaseTrainer(ABC):
             )
             all_features = self.models["encoder"](all_color_aug)
             all_features = [torch.split(f, self.opt.batch_size) for f in all_features]
-            features = {k: [f[i] for f in all_features]
-                        for i, k in enumerate(self.opt.frame_ids)}
+            features = {
+                k: [f[i] for f in all_features]
+                for i, k in enumerate(self.opt.frame_ids)
+            }
             outputs = self.models["depth"](features[0])
         else:
             features = self.models["encoder"](inputs["color_aug", 0, 0])
@@ -311,7 +357,9 @@ class BaseTrainer(ABC):
         if self.opt.pose_model_type == "shared":
             pose_feats = {f_i: features[f_i] for f_i in self.opt.frame_ids}
         else:
-            pose_feats = {f_i: inputs["color_aug", f_i, 0] for f_i in self.opt.frame_ids}
+            pose_feats = {
+                f_i: inputs["color_aug", f_i, 0] for f_i in self.opt.frame_ids
+            }
 
         for f_i in self.opt.frame_ids[1:]:
             if f_i == "s":
@@ -333,17 +381,21 @@ class BaseTrainer(ABC):
                 outputs[("position", "high", scale, f_i)] = F.interpolate(
                     outputs[("position", scale, f_i)],
                     [self.opt.height, self.opt.width],
-                    mode="bilinear", align_corners=False,
+                    mode="bilinear",
+                    align_corners=False,
                 )
                 outputs[("registration", scale, f_i)] = self.spatial_transform(
                     inputs[("color", f_i, 0)],
                     outputs[("position", "high", scale, f_i)],
                 )
-                outputs[("position_reverse", scale, f_i)] = outputs_1[("position", scale)]
+                outputs[("position_reverse", scale, f_i)] = outputs_1[
+                    ("position", scale)
+                ]
                 outputs[("position_reverse", "high", scale, f_i)] = F.interpolate(
                     outputs[("position_reverse", scale, f_i)],
                     [self.opt.height, self.opt.width],
-                    mode="bilinear", align_corners=False,
+                    mode="bilinear",
+                    align_corners=False,
                 )
                 (
                     outputs[("occu_mask_backward", scale, f_i)],
@@ -351,14 +403,21 @@ class BaseTrainer(ABC):
                 ) = self.get_occu_mask_backward(
                     outputs[("position_reverse", "high", scale, f_i)]
                 )
-                outputs[("occu_map_bidirection", scale, f_i)] = self.get_occu_mask_bidirection(
-                    outputs[("position", "high", scale, f_i)],
-                    outputs[("position_reverse", "high", scale, f_i)],
+                outputs[("occu_map_bidirection", scale, f_i)] = (
+                    self.get_occu_mask_bidirection(
+                        outputs[("position", "high", scale, f_i)],
+                        outputs[("position_reverse", "high", scale, f_i)],
+                    )
                 )
 
             # Appearance transform
-            transform_input = [outputs[("registration", 0, f_i)], inputs[("color", 0, 0)]]
-            transform_inputs = self.models["transform_encoder"](torch.cat(transform_input, 1))
+            transform_input = [
+                outputs[("registration", 0, f_i)],
+                inputs[("color", 0, 0)],
+            ]
+            transform_inputs = self.models["transform_encoder"](
+                torch.cat(transform_input, 1)
+            )
             outputs_2 = self.models["transform"](transform_inputs)
 
             for scale in self.opt.scales:
@@ -366,13 +425,15 @@ class BaseTrainer(ABC):
                 outputs[("transform", "high", scale, f_i)] = F.interpolate(
                     outputs[("transform", scale, f_i)],
                     [self.opt.height, self.opt.width],
-                    mode="bilinear", align_corners=False,
+                    mode="bilinear",
+                    align_corners=False,
                 )
                 outputs[("refined", scale, f_i)] = torch.clamp(
                     outputs[("transform", "high", scale, f_i)]
                     * outputs[("occu_mask_backward", 0, f_i)].detach()
                     + inputs[("color", 0, 0)],
-                    min=0.0, max=1.0,
+                    min=0.0,
+                    max=1.0,
                 )
 
             # Pose
@@ -392,8 +453,10 @@ class BaseTrainer(ABC):
             disp = outputs[("disp", scale)]
             if not self.opt.v1_multiscale:
                 disp = F.interpolate(
-                    disp, [self.opt.height, self.opt.width],
-                    mode="bilinear", align_corners=False,
+                    disp,
+                    [self.opt.height, self.opt.width],
+                    mode="bilinear",
+                    align_corners=False,
                 )
             _, depth = disp_to_depth(disp, self.opt.min_depth, self.opt.max_depth)
             outputs[("depth", 0, scale)] = depth
@@ -428,9 +491,9 @@ class BaseTrainer(ABC):
                     pix_coords,
                     padding_mode="border",
                 )
-                outputs[("position_depth", scale, frame_id)] = self.position_depth[source_scale](
-                    cam_points, inputs[("K", source_scale)], T
-                )
+                outputs[("position_depth", scale, frame_id)] = self.position_depth[
+                    source_scale
+                ](cam_points, inputs[("K", source_scale)], T)
 
     def compute_reprojection_loss(self, pred, target):
         abs_diff = torch.abs(target - pred)
@@ -453,37 +516,48 @@ class BaseTrainer(ABC):
                 for frame_id in self.opt.frame_ids[1:]:
                     writer.add_image(
                         "brightness_{}_{}/{}".format(frame_id, s, j),
-                        outputs[("transform", "high", s, frame_id)][j].data, self.step,
+                        outputs[("transform", "high", s, frame_id)][j].data,
+                        self.step,
                     )
                     writer.add_image(
                         "registration_{}_{}/{}".format(frame_id, s, j),
-                        outputs[("registration", s, frame_id)][j].data, self.step,
+                        outputs[("registration", s, frame_id)][j].data,
+                        self.step,
                     )
                     writer.add_image(
                         "refined_{}_{}/{}".format(frame_id, s, j),
-                        outputs[("refined", s, frame_id)][j].data, self.step,
+                        outputs[("refined", s, frame_id)][j].data,
+                        self.step,
                     )
                     if s == 0:
                         writer.add_image(
                             "occu_mask_backward_{}_{}/{}".format(frame_id, s, j),
-                            outputs[("occu_mask_backward", s, frame_id)][j].data, self.step,
+                            outputs[("occu_mask_backward", s, frame_id)][j].data,
+                            self.step,
                         )
                 writer.add_image(
                     "disp_{}/{}".format(s, j),
-                    normalize_image(outputs[("disp", s)][j]), self.step,
+                    normalize_image(outputs[("disp", s)][j]),
+                    self.step,
                 )
 
     def log_time(self, batch_idx, duration, loss):
         samples_per_sec = self.opt.batch_size / duration
         time_sofar = time.time() - self.start_time
         training_time_left = (
-            (self.num_total_steps / self.step - 1.0) * time_sofar if self.step > 0 else 0
+            (self.num_total_steps / self.step - 1.0) * time_sofar
+            if self.step > 0
+            else 0
         )
         print(
             "epoch {:>3} | batch {:>6} | examples/s: {:5.1f}"
             " | loss: {:.5f} | time elapsed: {} | time left: {}".format(
-                self.epoch, batch_idx, samples_per_sec, loss,
-                sec_to_hm_str(time_sofar), sec_to_hm_str(training_time_left),
+                self.epoch,
+                batch_idx,
+                samples_per_sec,
+                loss,
+                sec_to_hm_str(time_sofar),
+                sec_to_hm_str(training_time_left),
             )
         )
 
@@ -534,14 +608,14 @@ class BaseTrainer(ABC):
         self.project_3d = {}
         self.position_depth = {}
         for scale in self.opt.scales:
-            h = self.opt.height // (2 ** scale)
-            w = self.opt.width // (2 ** scale)
+            h = self.opt.height // (2**scale)
+            w = self.opt.width // (2**scale)
             self.backproject_depth[scale] = BackprojectDepth(
                 self.opt.batch_size, h, w
             ).to(self.device)
-            self.project_3d[scale] = Project3D(
-                self.opt.batch_size, h, w
-            ).to(self.device)
+            self.project_3d[scale] = Project3D(self.opt.batch_size, h, w).to(
+                self.device
+            )
             self.position_depth[scale] = optical_flow(
                 (h, w), self.opt.batch_size, h, w
             ).to(self.device)
