@@ -15,6 +15,7 @@ from __future__ import absolute_import, division, print_function
 import torch
 import networks
 
+import torch.nn.functional as F
 from layers import get_smooth_loss, get_smooth_bright
 from .base import BaseTrainer
 
@@ -85,6 +86,12 @@ class StageTwoTrainer(BaseTrainer):
             ).to(self.device)
             self.parameters_to_train += list(self.models["predictive_mask"].parameters())
 
+        if getattr(self.opt, "use_specular_net", False):
+            self.models["specular"] = networks.SpecularDecoder(
+                self.models["encoder"].num_ch_enc, self.opt.scales
+            ).to(self.device)
+            self.parameters_to_train += list(self.models["specular"].parameters())
+
     def load_model(self):
         """Load weights and freeze every loaded model (position net from Stage 1)."""
         import os
@@ -111,13 +118,13 @@ class StageTwoTrainer(BaseTrainer):
 
     def set_train(self):
         for name in ("encoder", "depth", "transform_encoder", "transform",
-                     "pose_encoder", "pose"):
+                     "pose_encoder", "pose", "specular"):
             if name in self.models:
                 self.models[name].train()
 
     def set_eval(self):
         for name in ("encoder", "depth", "transform_encoder", "transform",
-                     "pose_encoder", "pose"):
+                     "pose_encoder", "pose", "specular"):
             if name in self.models:
                 self.models[name].eval()
 
@@ -139,6 +146,9 @@ class StageTwoTrainer(BaseTrainer):
         else:
             features = self.models["encoder"](inputs["color_aug", 0, 0])
             outputs = self.models["depth"](features)
+
+        if "specular" in self.models:
+            outputs.update(self.models["specular"](features))
 
         if self.opt.predictive_mask:
             outputs["predictive_mask"] = self.models["predictive_mask"](features)
@@ -165,22 +175,38 @@ class StageTwoTrainer(BaseTrainer):
             disp = outputs[("disp", scale)]
             color = inputs[("color", 0, scale)]
 
+            # Specular gating mask: high-confidence specular pixels are down-weighted.
+            # Detach so S is only trained through its own BCE objective.
+            if ("specular", scale) in outputs:
+                specular_conf = outputs[("specular", scale)].detach()  # (B,1,H_s,W_s)
+            else:
+                specular_conf = None
+
             for frame_id in self.opt.frame_ids[1:]:
                 occu_mask = outputs[("occu_mask_backward", 0, frame_id)].detach()
+
+                if specular_conf is not None:
+                    sc = specular_conf
+                    if sc.shape[2:] != occu_mask.shape[2:]:
+                        sc = F.interpolate(sc, size=occu_mask.shape[2:],
+                                           mode="bilinear", align_corners=False)
+                    valid = occu_mask * (1.0 - sc)
+                else:
+                    valid = occu_mask
 
                 loss_reprojection += (
                     self.compute_reprojection_loss(
                         outputs[("color", frame_id, scale)],
                         outputs[("refined", scale, frame_id)],
-                    ) * occu_mask
-                ).sum() / occu_mask.sum()
+                    ) * valid
+                ).sum() / valid.sum().clamp(min=1)
 
                 loss_transform += (
                     torch.abs(
                         outputs[("refined", scale, frame_id)]
                         - outputs[("registration", 0, frame_id)].detach()
-                    ).mean(1, True) * occu_mask
-                ).sum() / occu_mask.sum()
+                    ).mean(1, True) * valid
+                ).sum() / valid.sum().clamp(min=1)
 
                 loss_cvt += get_smooth_bright(
                     outputs[("transform", "high", scale, frame_id)],

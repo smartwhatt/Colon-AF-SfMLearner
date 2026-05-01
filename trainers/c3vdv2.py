@@ -23,7 +23,12 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from datasets.c3vdv2_dataset import C3VDv2Dataset
-from .c3vdv2_losses import scale_invariant_log_loss, pose_loss
+from .c3vdv2_losses import (
+    scale_invariant_log_loss,
+    pose_loss,
+    compute_specular_pseudo_labels,
+    specular_bce_loss,
+)
 from .base import BaseTrainer
 from .stage_one import StageOneTrainer
 from .stage_two import StageTwoTrainer
@@ -263,6 +268,23 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             l_depth = scale_invariant_log_loss(pred_depth, gt_depth, depth_mask)
             losses["loss/depth_supervised"] = l_depth
             losses["loss"] = losses["loss"] + self.w_depth * l_depth
+
+        # Specular BCE weak supervision
+        if getattr(self.opt, "use_specular_net", False) and ("specular", 0) in outputs:
+            color_0 = inputs[("color", 0, 0)]
+            pseudo = compute_specular_pseudo_labels(
+                color_0, threshold=getattr(self.opt, "specular_threshold", 0.98)
+            )
+            pred_s = outputs[("specular", 0)]
+            # Resize pseudo-label if training resolution differs from full image
+            if pseudo.shape != pred_s.shape:
+                pseudo = F.interpolate(
+                    pseudo, size=pred_s.shape[2:], mode="nearest"
+                )
+            l_specular = specular_bce_loss(pred_s, pseudo)
+            losses["loss/specular_bce"] = l_specular
+            w_spec = getattr(self.opt, "specular_loss_weight", 0.05)
+            losses["loss"] = losses["loss"] + w_spec * l_specular
 
         # Supervised pose
         gt_key_map = {

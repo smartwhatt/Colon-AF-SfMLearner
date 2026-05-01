@@ -126,6 +126,20 @@ class TrainingConfig(BaseModel):
     w_pose_end: float = Field(default=0.1, description="supervised pose weight at final epoch")
     ramp_epochs: int = Field(default=8, description="epochs before supervised weights start ramping")
 
+    # ── SpecularNet ───────────────────────────────────────────────────────────
+    use_specular_net: bool = Field(
+        default=False,
+        description="add a lightweight specular confidence head to Stage 2 training",
+    )
+    specular_loss_weight: float = Field(
+        default=0.05,
+        description="weight for the specular BCE weak-supervision loss",
+    )
+    specular_threshold: float = Field(
+        default=0.98,
+        description="intensity threshold (0–1) above which pixels are treated as specular",
+    )
+
     # ── Logging ───────────────────────────────────────────────────────────────
     log_frequency: int = Field(default=200, description="batches between TensorBoard log writes")
     save_frequency: int = Field(default=1, description="epochs between model saves")

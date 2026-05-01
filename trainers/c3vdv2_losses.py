@@ -152,6 +152,57 @@ def photometric_loss(
 
 
 # ---------------------------------------------------------------------------
+# 4. Specular weak-supervision helpers
+# ---------------------------------------------------------------------------
+
+
+def compute_specular_pseudo_labels(
+    image: torch.Tensor,
+    threshold: float = 0.98,
+) -> torch.Tensor:
+    """Generate weak per-pixel specular labels from near-saturated pixels.
+
+    Args:
+        image:      (B, 3, H, W) float RGB in [0, 1]
+        threshold:  intensity above which a pixel is considered specular
+
+    Returns:
+        (B, 1, H, W) float labels in {0, 1}
+    """
+    intensity = image.mean(dim=1, keepdim=True)  # (B,1,H,W)
+    labels = (intensity >= threshold).float()
+    # Dilate by 1 pixel via max-pool to cover specular halos
+    labels = F.max_pool2d(labels, kernel_size=3, stride=1, padding=1)
+    # Exclude very dark pixels (likely invalid/noise, not specular)
+    valid = (intensity > 0.05).float()
+    return labels * valid
+
+
+def specular_bce_loss(
+    pred_specular: torch.Tensor,
+    pseudo_labels: torch.Tensor,
+    valid_mask: torch.Tensor = None,
+) -> torch.Tensor:
+    """Binary cross-entropy between the predicted specular map and pseudo-labels.
+
+    Args:
+        pred_specular:  (B, 1, H, W) sigmoid specular confidence in [0, 1]
+        pseudo_labels:  (B, 1, H, W) float labels in {0, 1}
+        valid_mask:     (B, 1, H, W) float mask — 1 = use, 0 = ignore
+
+    Returns:
+        Scalar loss.
+    """
+    loss_map = F.binary_cross_entropy(
+        pred_specular, pseudo_labels, reduction="none"
+    )
+    if valid_mask is not None:
+        n = valid_mask.sum().clamp(min=1)
+        return (loss_map * valid_mask).sum() / n
+    return loss_map.mean()
+
+
+# ---------------------------------------------------------------------------
 # Combined loss
 # ---------------------------------------------------------------------------
 
