@@ -4,32 +4,26 @@
 # =============================================================================
 # Full end-to-end fine-tuning pipeline for AF-SfMLearner on C3VDv2.
 #
-# What this script does:
-#   Stage 1 — Fine-tune the registration/correspondence net on C3VDv2.
+# Stages:
+#   Stage 1 — Fine-tune registration/correspondence net.
 #             Purely self-supervised. ~20 epochs.
-#             Teaches the net colonoscopy tissue appearance and scope motion.
+#   Stage 2 — Fine-tune depth + pose + transform with frozen Stage 1 weights.
+#             Supervised depth and pose losses ramp high → low.
 #
-#   Stage 2 — Fine-tune depth + pose + transform on C3VDv2, with frozen
-#             Stage 1 registration weights. Supervised depth and pose losses
-#             ramp from high weight → low weight as the self-supervised signal
-#             becomes reliable.
-#
-# Prerequisites:
-#   - AF-SfMLearner repo cloned and set up
-#   - Python env with PyTorch, OpenCV, tensorboardX, etc.
-#   - C3VDv2 dataset downloaded and organised
-#   - Undistortion maps computed: python compute_undistort_map.py ...
-#   - Split files generated:      python generate_splits.py ...
-#   - AF-SfMLearner repo cloned and set up (train.py entry point)
+# SpecularNet ablations (Phase 1 PR 1):
+#   USE_SPECULAR_NET=0  →  Ablation A: baseline (default)
+#   USE_SPECULAR_NET=1  →  Ablation B: specular gating only (no PPS)
 #
 # Usage:
-#   bash run_finetune_c3vdv2.sh
-#   or with custom paths:
-#   DATA_PATH=/my/data LOG_DIR=/my/logs bash run_finetune_c3vdv2.sh
+#   bash scripts/run_finetune_c3vdv2.sh
+#   DATA_PATH=/my/data LOG_DIR=/my/logs bash scripts/run_finetune_c3vdv2.sh
+#   USE_SPECULAR_NET=1 DATA_PATH=/my/data LOG_DIR=/my/logs bash scripts/run_finetune_c3vdv2.sh
 #
+# To skip Stage 1 (use existing weights):
+#   SKIP_STAGE1=1 S1_FINAL_WEIGHTS=/path/to/weights bash scripts/run_finetune_c3vdv2.sh
 # =============================================================================
 
-set -e  # exit immediately on any error
+set -e
 
 # =============================================================================
 # CONFIGURE THESE
@@ -42,10 +36,10 @@ SPLIT="${SPLIT:-c3vdv2}"
 GPU="${GPU:-0}"
 
 # Optional: path to SCARED pretrained weights to warm-start Stage 1.
-# Set to "" to train Stage 1 from scratch (takes longer).
-SCARED_STAGE1_WEIGHTS="${SCARED_STAGE1_WEIGHTS:-./model/pretrained/scared_stage1/}" 
+# Set to "" to train Stage 1 from scratch.
+SCARED_STAGE1_WEIGHTS="${SCARED_STAGE1_WEIGHTS:-./model/pretrained/scared_stage1/}"
 
-# Stage 1 settings (paper Section 4.2)
+# Stage 1 settings
 S1_EPOCHS="${S1_EPOCHS:-20}"
 S1_LR="${S1_LR:-1e-4}"
 S1_BATCH="${S1_BATCH:-12}"
@@ -58,26 +52,36 @@ S2_BATCH="${S2_BATCH:-12}"
 S2_LR_STEP="${S2_LR_STEP:-10}"
 
 # Loss weight ramping
-# Phase 1 (epochs 0 → ramp_epochs-1): fixed at _start values
-#   High GT weight anchors depth+pose while registration/transform adapt
-# Phase 2 (epochs ramp_epochs → end): linearly decay to _end values
-#   Self-supervised signal now more reliable, reduce GT dependency
 W_DEPTH_START="${W_DEPTH_START:-1.0}"
 W_DEPTH_END="${W_DEPTH_END:-0.3}"
 W_POSE_START="${W_POSE_START:-0.5}"
 W_POSE_END="${W_POSE_END:-0.1}"
 RAMP_EPOCHS="${RAMP_EPOCHS:-8}"
 
+# ── SpecularNet (Phase 1 PR 1) ────────────────────────────────────────────────
+# USE_SPECULAR_NET=0  →  Ablation A: baseline (no change to existing training)
+# USE_SPECULAR_NET=1  →  Ablation B: specular gating + BCE weak supervision
+USE_SPECULAR_NET="${USE_SPECULAR_NET:-0}"
+SPECULAR_LOSS_WEIGHT="${SPECULAR_LOSS_WEIGHT:-0.05}"
+SPECULAR_THRESHOLD="${SPECULAR_THRESHOLD:-0.98}"
+
 # =============================================================================
 # DERIVED PATHS
 # =============================================================================
 
 S1_LOG_NAME="stage1"
-S2_LOG_NAME="stage2"
 
-# Stage 1 saves checkpoints to: $LOG_DIR/$S1_LOG_NAME/models/weights_N/
-# We pass the final epoch checkpoint to Stage 2
-S1_FINAL_WEIGHTS="${LOG_DIR}/${S1_LOG_NAME}/models/weights_$((S1_EPOCHS - 1))/"
+# Stage 2 log name encodes the ablation variant for clean separation in TensorBoard
+if [ "$USE_SPECULAR_NET" = "1" ]; then
+    S2_LOG_NAME="stage2_specular"
+else
+    S2_LOG_NAME="stage2"
+fi
+
+SKIP_STAGE1="${SKIP_STAGE1:-0}"
+
+# S1_FINAL_WEIGHTS can be overridden externally (e.g. SKIP_STAGE1=1 with existing ckpt)
+S1_FINAL_WEIGHTS="${S1_FINAL_WEIGHTS:-${LOG_DIR}/${S1_LOG_NAME}/models/weights_$((S1_EPOCHS - 1))/}"
 
 # =============================================================================
 # HELPERS
@@ -111,11 +115,9 @@ run_stage1() {
     log "STAGE 1: Fine-tuning registration/correspondence net on C3VDv2"
     echo "  What:    position_encoder + position (only)"
     echo "  Loss:    photometric + smoothness  (no GT supervision)"
-    echo "  Purpose: learn colonoscopy tissue appearance and scope motion"
     echo "  Epochs:  $S1_EPOCHS  LR: $S1_LR  Batch: $S1_BATCH"
     echo "  Output:  $S1_FINAL_WEIGHTS"
 
-    # Build load_weights_folder arg — only if SCARED weights exist
     LOAD_WEIGHTS_ARG=""
     if [ -n "$SCARED_STAGE1_WEIGHTS" ] && [ -d "$SCARED_STAGE1_WEIGHTS" ]; then
         LOAD_WEIGHTS_ARG="--load_weights_folder $SCARED_STAGE1_WEIGHTS"
@@ -156,10 +158,24 @@ run_stage2() {
     echo "  w_depth: $W_DEPTH_START → $W_DEPTH_END  w_pose: $W_POSE_START → $W_POSE_END"
     echo "  Ramp:    fixed for $RAMP_EPOCHS epochs, then linear decay"
 
+    if [ "$USE_SPECULAR_NET" = "1" ]; then
+        echo "  SpecularNet: ON  (weight=$SPECULAR_LOSS_WEIGHT  threshold=$SPECULAR_THRESHOLD)"
+        echo "  Ablation:    B  [SpecularNet gating only — no PPS]"
+    else
+        echo "  SpecularNet: OFF"
+        echo "  Ablation:    A  [baseline]"
+    fi
+
     if [ ! -d "$S1_FINAL_WEIGHTS" ]; then
         echo "ERROR: Stage 1 output not found: $S1_FINAL_WEIGHTS"
-        echo "Did Stage 1 complete successfully?"
+        echo "Did Stage 1 complete? Or set S1_FINAL_WEIGHTS=/path/to/weights to override."
         exit 1
+    fi
+
+    # Build optional SpecularNet flags
+    SPECULAR_ARGS=""
+    if [ "$USE_SPECULAR_NET" = "1" ]; then
+        SPECULAR_ARGS="--use_specular_net --specular_loss_weight $SPECULAR_LOSS_WEIGHT --specular_threshold $SPECULAR_THRESHOLD"
     fi
 
     CUDA_VISIBLE_DEVICES=$GPU uv run python train.py --mode c3vdv2_stage2 \
@@ -182,7 +198,8 @@ run_stage2() {
         --w_depth_end         "$W_DEPTH_END" \
         --w_pose_start        "$W_POSE_START" \
         --w_pose_end          "$W_POSE_END" \
-        --ramp_epochs         "$RAMP_EPOCHS"
+        --ramp_epochs         "$RAMP_EPOCHS" \
+        $SPECULAR_ARGS
 
     log "Stage 2 complete."
     echo "  Final weights: ${LOG_DIR}/${S2_LOG_NAME}/models/weights_$((S2_EPOCHS - 1))/"
@@ -197,18 +214,31 @@ echo "  GPU:          $GPU"
 echo "  Data:         $DATA_PATH"
 echo "  Logs:         $LOG_DIR"
 echo "  Split:        $SPLIT"
+echo "  SpecularNet:  $USE_SPECULAR_NET"
 
 check_data
-run_stage1
+
+if [ "$SKIP_STAGE1" = "1" ]; then
+    log "Skipping Stage 1 (SKIP_STAGE1=1). Using: $S1_FINAL_WEIGHTS"
+else
+    run_stage1
+fi
+
 run_stage2
+
+S2_FINAL_WEIGHTS="${LOG_DIR}/${S2_LOG_NAME}/models/weights_$((S2_EPOCHS - 1))/"
 
 log "ALL DONE"
 echo ""
 echo "  Evaluate with:"
 echo "  uv run python tools/evaluate_c3vdv2.py \\"
 echo "      --data_root $DATA_PATH \\"
-echo "      --weights_folder ${LOG_DIR}/${S2_LOG_NAME}/models/weights_$((S2_EPOCHS - 1))/ \\"
+echo "      --weights_folder $S2_FINAL_WEIGHTS \\"
 echo "      --split $SPLIT"
 echo ""
 echo "  Monitor training:"
 echo "  uv run tensorboard --logdir $LOG_DIR"
+echo ""
+echo "  Run ablation B (SpecularNet on, same Stage 1 weights):"
+echo "  USE_SPECULAR_NET=1 SKIP_STAGE1=1 S1_FINAL_WEIGHTS=$S1_FINAL_WEIGHTS \\"
+echo "    DATA_PATH=$DATA_PATH LOG_DIR=$LOG_DIR bash scripts/run_finetune_c3vdv2.sh"
