@@ -25,12 +25,25 @@ HEADERS = {
 # -----------------------------
 # Playwright helpers
 # -----------------------------
-def launch_browser(playwright, headless):
-    browser = playwright.chromium.launch(
-        headless=headless,
-        channel="chrome",
-        args=["--disable-blink-features=AutomationControlled"],
-    )
+def launch_browser(playwright, headless, debug=False):
+    # Try real Chrome first, fall back to Chromium with stealth args
+    for channel in ("chrome", "msedge", None):
+        try:
+            kwargs = dict(
+                headless=headless,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            if channel:
+                kwargs["channel"] = channel
+            browser = playwright.chromium.launch(**kwargs)
+            if debug:
+                print(f"  [debug] launched browser: channel={channel or 'chromium'}")
+            break
+        except Exception as e:
+            if debug:
+                print(f"  [debug] channel={channel} unavailable: {e}")
+            if channel is None:
+                raise
     context = browser.new_context(user_agent=HEADERS["User-Agent"])
     page = context.new_page()
     page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -73,15 +86,22 @@ def get_browser_cookies(page):
     return {c["name"]: c["value"] for c in page.context.cookies()}
 
 
-def refresh_cookies(playwright, headless):
+def refresh_cookies(playwright, headless, debug=False):
     """Re-launch browser and return fresh Cloudflare cookies."""
     print("  [session expired] refreshing Cloudflare cookies...", end=" ", flush=True)
-    browser, page = launch_browser(playwright, headless)
+    browser, page = launch_browser(playwright, headless, debug=debug)
     url = f"{BASE_URL}/api/datasets/:persistentId?persistentId=doi:{DOI}"
     page.goto(url, wait_until="networkidle", timeout=30000)
     cookies = get_browser_cookies(page)
     browser.close()
-    print("done.")
+    print(f"got {len(cookies)} cookies: {', '.join(cookies.keys()) or 'NONE'}")
+    if debug:
+        # Test a small request with the new cookies to verify they work
+        test_url = f"{BASE_URL}/api/datasets/:persistentId?persistentId=doi:{DOI}"
+        r = requests.get(test_url, headers=HEADERS, cookies=cookies, timeout=15)
+        print(f"  [debug] test request → HTTP {r.status_code}")
+        if r.status_code != 200:
+            print(f"  [debug] response headers: {dict(r.headers)}")
     return cookies
 
 
@@ -104,7 +124,7 @@ def get_remote_file_size(ssh_alias, remote_path):
 
 
 def transfer_file(file_id, filename, expected_size, ssh_alias, remote_dir, cookies,
-                  playwright, headless):
+                  playwright, headless, debug=False):
     """Stream JHU → SSH pipe → LANTA. Refreshes cookies on 403. Zero local disk."""
     remote_path = f"{remote_dir}/{filename}"
     url = f"{BASE_URL}/api/access/datafile/{file_id}"
@@ -125,7 +145,9 @@ def transfer_file(file_id, filename, expected_size, ssh_alias, remote_dir, cooki
 
         with requests.get(url, headers=hdrs, cookies=cookies, stream=True, timeout=3600) as r:
             if r.status_code == 403:
-                cookies = refresh_cookies(playwright, headless)
+                if debug:
+                    print(f"  [debug] 403 headers: {dict(r.headers)}")
+                cookies = refresh_cookies(playwright, headless, debug=debug)
                 continue  # retry with fresh cookies
 
             if r.status_code not in (200, 206):
@@ -185,6 +207,8 @@ def main():
     parser.add_argument("--delete-zip", action="store_true", help="Delete zip on LANTA after extracting")
     parser.add_argument("--no-headless", dest="headless", action="store_false", default=True,
                         help="Show browser window")
+    parser.add_argument("--debug", action="store_true",
+                        help="Print browser/cookie/HTTP debug info")
     args = parser.parse_args()
 
     print(f"SSH alias:  {args.ssh_alias}")
@@ -193,12 +217,14 @@ def main():
     print()
 
     with sync_playwright() as playwright:
-        browser, page = launch_browser(playwright, args.headless)
+        browser, page = launch_browser(playwright, args.headless, debug=args.debug)
 
         print("Fetching metadata...")
         metadata = fetch_metadata_via_api(page)
         files = get_files(metadata)
         cookies = get_browser_cookies(page)
+        if args.debug:
+            print(f"  [debug] initial cookies: {', '.join(cookies.keys()) or 'NONE'}")
         browser.close()
 
         total_size = sum(f["dataFile"]["filesize"] for f in files)
@@ -265,6 +291,7 @@ def main():
                 cookies=cookies,
                 playwright=playwright,
                 headless=args.headless,
+                debug=args.debug,
             )
             if not ok:
                 failed.append(filename)
