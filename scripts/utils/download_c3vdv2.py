@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Download C3VDv2 dataset to local machine using a real browser (bypasses Cloudflare)."""
+"""Download C3VDv2 dataset to local machine using a real browser (bypasses Cloudflare).
+
+Resume: already-complete files are skipped based on local file size check.
+"""
 
 import os
 import sys
@@ -7,20 +10,12 @@ import json
 import argparse
 import zipfile
 
+import requests
+from tqdm import tqdm
 from playwright.sync_api import sync_playwright
 
 DOI = "10.7281/T1/JC64MK"
 BASE_URL = "https://archive.data.jhu.edu"
-
-
-def fetch_metadata(page):
-    url = f"{BASE_URL}/api/datasets/:persistentId?persistentId=doi:{DOI}"
-    response = page.goto(url, wait_until="networkidle")
-    if response.status != 200:
-        print(f"ERROR: metadata fetch returned HTTP {response.status}")
-        sys.exit(1)
-    return json.loads(page.content().split("<body>")[1].split("</body>")[0]
-                      if "<body>" in page.content() else page.inner_text("pre") or page.content())
 
 
 def fetch_metadata_via_api(page):
@@ -40,7 +35,6 @@ def fetch_metadata_via_api(page):
     if "data" in result:
         return result["data"]
 
-    # fallback: read text from page
     try:
         text = page.inner_text("body")
         return json.loads(text)
@@ -54,7 +48,6 @@ def get_files(metadata):
         return metadata["data"]["latestVersion"]["files"]
     except KeyError:
         print("ERROR: Unexpected metadata format")
-        print(json.dumps(metadata, indent=2)[:500])
         sys.exit(1)
 
 
@@ -62,24 +55,52 @@ def format_size(bytes_size):
     return f"{bytes_size / 1024 / 1024:.2f} MB"
 
 
-def download_file(page, file_id, filename, output_dir):
-    url = f"{BASE_URL}/api/access/datafile/{file_id}"
+def get_browser_cookies(page):
+    cookies = page.context.cookies()
+    return {c["name"]: c["value"] for c in cookies}
+
+
+def download_file(file_id, filename, expected_size, output_dir, cookies):
     output_path = os.path.join(output_dir, filename)
+    url = f"{BASE_URL}/api/access/datafile/{file_id}"
 
-    print(f"  Downloading {filename}...", end=" ", flush=True)
+    # Resume check
+    existing_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+    if existing_size == expected_size:
+        print(f"  [{filename}] already complete, skipping.")
+        return output_path
+    if existing_size > 0:
+        print(f"  [{filename}] partial file ({existing_size / 1024**2:.1f} MB / {expected_size / 1024**2:.1f} MB), resuming...")
 
-    with page.expect_download() as dl_info:
-        page.evaluate(f"""
-            const a = document.createElement('a');
-            a.href = '{url}';
-            a.download = '{filename}';
-            document.body.appendChild(a);
-            a.click();
-        """)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    }
+    if existing_size > 0:
+        headers["Range"] = f"bytes={existing_size}-"
 
-    download = dl_info.value
-    download.save_as(output_path)
-    print("done.")
+    with requests.get(url, headers=headers, cookies=cookies, stream=True, timeout=3600) as r:
+        if r.status_code not in (200, 206):
+            print(f"  ERROR: HTTP {r.status_code} for {filename}")
+            return None
+
+        resuming = r.status_code == 206
+        downloaded_bytes = existing_size if resuming else 0
+        mode = "ab" if resuming else "wb"
+
+        with tqdm(
+            total=expected_size,
+            initial=downloaded_bytes,
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+            desc=filename[:50],
+            ncols=100,
+        ) as pbar:
+            with open(output_path, mode) as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    f.write(chunk)
+                    pbar.update(len(chunk))
+
     return output_path
 
 
@@ -98,15 +119,14 @@ def main():
     parser.add_argument("output_dir", nargs="?", default="./downloads")
     parser.add_argument("--no-unzip", action="store_true")
     parser.add_argument("--delete-zip", action="store_true")
-    parser.add_argument("--headless", action="store_true", default=True,
-                        help="Run browser headless (default: True)")
-    parser.add_argument("--no-headless", dest="headless", action="store_false",
+    parser.add_argument("--no-headless", dest="headless", action="store_false", default=True,
                         help="Show browser window")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
     print(f"Download directory: {args.output_dir}")
     print(f"Auto-unzip: {not args.no_unzip}")
+    print()
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -115,7 +135,6 @@ def main():
             args=["--disable-blink-features=AutomationControlled"],
         )
         context = browser.new_context(
-            accept_downloads=True,
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         )
         page = context.new_page()
@@ -124,60 +143,71 @@ def main():
         print("Fetching metadata...")
         metadata = fetch_metadata_via_api(page)
         files = get_files(metadata)
-
-        total_size = sum(f["dataFile"]["filesize"] for f in files)
-
-        print("\nAvailable files:")
-        print("-" * 100)
-        for i, f in enumerate(files):
-            name = f["label"]
-            size = format_size(f["dataFile"]["filesize"])
-            print(f"[{i:3d}] {name:<60} {size}")
-        print("-" * 100)
-        print(f"Total dataset size: {total_size / 1024 / 1024 / 1024:.2f} GB\n")
-
-        print("Options:")
-        print("1) Download ALL files")
-        print("2) Download first N files")
-        print("3) Select manually")
-
-        choice = input("Choose option [1-3]: ").strip()
-        selected = []
-
-        if choice == "1":
-            selected = list(range(len(files)))
-        elif choice == "2":
-            N = int(input("Enter N: "))
-            selected = list(range(min(N, len(files))))
-        elif choice == "3":
-            indices = input("Enter indices (space separated): ").split()
-            selected = [int(i) for i in indices]
-        else:
-            print("Invalid choice")
-            sys.exit(1)
-
-        # Navigate to dataset page first so cookies/session are set
-        page.goto(f"{BASE_URL}/dataset.xhtml?persistentId=doi:{DOI}", wait_until="networkidle")
-
-        print("\nStarting downloads...")
-        print("-" * 100)
-
-        for i in selected:
-            f = files[i]
-            file_id = f["dataFile"]["id"]
-            filename = f["label"]
-
-            output_path = download_file(page, file_id, filename, args.output_dir)
-
-            if not args.no_unzip and filename.endswith(".zip"):
-                extract_dir = os.path.join(args.output_dir, filename.replace(".zip", ""))
-                os.makedirs(extract_dir, exist_ok=True)
-                print(f"  Extracting {filename}...")
-                unzip_file(output_path, extract_dir, args.delete_zip)
-
-        print("-" * 100)
-        print("Done.")
+        cookies = get_browser_cookies(page)
         browser.close()
+
+    total_size = sum(f["dataFile"]["filesize"] for f in files)
+
+    print("\nAvailable files:")
+    print("-" * 100)
+    for i, f in enumerate(files):
+        print(f"[{i:3d}] {f['label']:<60} {format_size(f['dataFile']['filesize'])}")
+    print("-" * 100)
+    print(f"Total dataset size: {total_size / 1024 / 1024 / 1024:.2f} GB\n")
+
+    print("Options:")
+    print("1) Download ALL files")
+    print("2) Download first N files")
+    print("3) Select manually")
+
+    choice = input("Choose option [1-3]: ").strip()
+    selected = []
+
+    if choice == "1":
+        selected = list(range(len(files)))
+    elif choice == "2":
+        N = int(input("Enter N: "))
+        selected = list(range(min(N, len(files))))
+    elif choice == "3":
+        indices = input("Enter indices (space separated): ").split()
+        selected = [int(i) for i in indices]
+    else:
+        print("Invalid choice")
+        sys.exit(1)
+
+    total = len(selected)
+    print(f"\nStarting downloads ({total} files)...\n")
+
+    failed = []
+    for n, i in enumerate(selected, 1):
+        f = files[i]
+        file_id = f["dataFile"]["id"]
+        filename = f["label"]
+        expected_size = f["dataFile"]["filesize"]
+
+        print(f"[{n}/{total}] {filename} ({format_size(expected_size)})")
+        output_path = download_file(
+            file_id=file_id,
+            filename=filename,
+            expected_size=expected_size,
+            output_dir=args.output_dir,
+            cookies=cookies,
+        )
+
+        if output_path is None:
+            failed.append(filename)
+            continue
+
+        if not args.no_unzip and filename.endswith(".zip"):
+            extract_dir = os.path.join(args.output_dir, filename.replace(".zip", ""))
+            os.makedirs(extract_dir, exist_ok=True)
+            print(f"  Extracting...")
+            unzip_file(output_path, extract_dir, args.delete_zip)
+
+    print("\n" + "=" * 100)
+    print(f"Done. {total - len(failed)}/{total} files downloaded successfully.")
+    if failed:
+        print(f"Failed: {', '.join(failed)}")
 
 
 if __name__ == "__main__":

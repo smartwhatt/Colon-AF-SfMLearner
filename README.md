@@ -72,6 +72,12 @@ A synthetic colonoscopy dataset with ground truth depth and pose.
      ```shell
      python scripts/generate_splits.py --data_root /path/to/C3VDv2 --output_dir splits/c3vdv2
      ```
+     By default this uses the curated C3VDv2 regional protocol: train on `t1/t2`,
+     validate on `t4`, and test on `t3`. To print the archive metadata indices
+     for the matching download plan:
+     ```shell
+     python scripts/generate_splits.py --print_download_indices
+     ```
 
 ### 3. REAL-Colon
 A large-scale clinical colonoscopy dataset for self-supervised training.

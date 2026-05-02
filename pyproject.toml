@@ -8,6 +8,7 @@ dependencies = [
     "opencv-python>=4.13.0.92",
     "playwright>=1.59.0",
     "pydantic>=2.12.5",
+    "requests>=2.33.1",
     "scikit-image>=0.26.0",
     "setuptools<82",
     "six>=1.17.0",
@@ -15,6 +16,7 @@ dependencies = [
     "tensorboardx>=2.6.4",
     "torch>=2.10.0",
     "torchvision>=0.25.0",
+    "tqdm>=4.67.3",
 ]
 
 [dependency-groups]

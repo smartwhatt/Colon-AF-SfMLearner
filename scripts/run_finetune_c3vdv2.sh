@@ -102,7 +102,7 @@ check_data() {
     fi
     if [ ! -f "splits/${SPLIT}/train.txt" ]; then
         echo "ERROR: Split file not found: splits/${SPLIT}/train.txt"
-        echo "Run: uv run python -m scripts.generate_splits --data_path $DATA_PATH --split $SPLIT"
+        echo "Run: uv run python scripts/generate_splits.py --data_root \"$DATA_PATH\" --output_dir \"splits/${SPLIT}\""
         exit 1
     fi
 }
