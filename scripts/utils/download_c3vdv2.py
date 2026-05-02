@@ -10,7 +10,7 @@ import json
 import argparse
 import zipfile
 
-import requests
+from curl_cffi import requests  # Chrome TLS fingerprint — bypasses Cloudflare bot check
 from tqdm import tqdm
 from playwright.sync_api import sync_playwright
 
@@ -78,7 +78,7 @@ def download_file(file_id, filename, expected_size, output_dir, cookies):
     if existing_size > 0:
         headers["Range"] = f"bytes={existing_size}-"
 
-    with requests.get(url, headers=headers, cookies=cookies, stream=True, timeout=3600) as r:
+    with requests.get(url, headers=headers, cookies=cookies, stream=True, timeout=3600, impersonate="chrome") as r:
         if r.status_code not in (200, 206):
             print(f"  ERROR: HTTP {r.status_code} for {filename}")
             return None

@@ -11,7 +11,7 @@ import argparse
 import subprocess
 import os
 
-import requests
+from curl_cffi import requests  # Chrome TLS fingerprint — bypasses Cloudflare bot check
 from tqdm import tqdm
 from playwright.sync_api import sync_playwright
 
@@ -98,7 +98,7 @@ def refresh_cookies(playwright, headless, debug=False):
     if debug:
         # Test a small request with the new cookies to verify they work
         test_url = f"{BASE_URL}/api/datasets/:persistentId?persistentId=doi:{DOI}"
-        r = requests.get(test_url, headers=HEADERS, cookies=cookies, timeout=15)
+        r = requests.get(test_url, headers=HEADERS, cookies=cookies, timeout=15, impersonate="chrome")
         print(f"  [debug] test request → HTTP {r.status_code}")
         if r.status_code != 200:
             print(f"  [debug] response headers: {dict(r.headers)}")
@@ -143,7 +143,7 @@ def transfer_file(file_id, filename, expected_size, ssh_alias, remote_dir, cooki
         if start_byte > 0:
             hdrs["Range"] = f"bytes={start_byte}-"
 
-        with requests.get(url, headers=hdrs, cookies=cookies, stream=True, timeout=3600) as r:
+        with requests.get(url, headers=hdrs, cookies=cookies, stream=True, timeout=3600, impersonate="chrome") as r:
             if r.status_code == 403:
                 if debug:
                     print(f"  [debug] 403 headers: {dict(r.headers)}")
