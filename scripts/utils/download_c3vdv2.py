@@ -78,28 +78,29 @@ def download_file(file_id, filename, expected_size, output_dir, cookies):
     if existing_size > 0:
         headers["Range"] = f"bytes={existing_size}-"
 
-    with requests.get(url, headers=headers, cookies=cookies, stream=True, timeout=3600, impersonate="chrome") as r:
-        if r.status_code not in (200, 206):
-            print(f"  ERROR: HTTP {r.status_code} for {filename}")
-            return None
+    r = requests.get(url, headers=headers, cookies=cookies, stream=True, timeout=3600, impersonate="chrome")
 
-        resuming = r.status_code == 206
-        downloaded_bytes = existing_size if resuming else 0
-        mode = "ab" if resuming else "wb"
+    if r.status_code not in (200, 206):
+        print(f"  ERROR: HTTP {r.status_code} for {filename}")
+        return None
 
-        with tqdm(
-            total=expected_size,
-            initial=downloaded_bytes,
-            unit="B",
-            unit_scale=True,
-            unit_divisor=1024,
-            desc=filename[:50],
-            ncols=100,
-        ) as pbar:
-            with open(output_path, mode) as f:
-                for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    f.write(chunk)
-                    pbar.update(len(chunk))
+    resuming = r.status_code == 206
+    downloaded_bytes = existing_size if resuming else 0
+    mode = "ab" if resuming else "wb"
+
+    with tqdm(
+        total=expected_size,
+        initial=downloaded_bytes,
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        desc=filename[:50],
+        ncols=100,
+    ) as pbar:
+        with open(output_path, mode) as f:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                f.write(chunk)
+                pbar.update(len(chunk))
 
     return output_path
 

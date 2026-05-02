@@ -143,40 +143,41 @@ def transfer_file(file_id, filename, expected_size, ssh_alias, remote_dir, cooki
         if start_byte > 0:
             hdrs["Range"] = f"bytes={start_byte}-"
 
-        with requests.get(url, headers=hdrs, cookies=cookies, stream=True, timeout=3600, impersonate="chrome") as r:
-            if r.status_code == 403:
-                if debug:
-                    print(f"  [debug] 403 headers: {dict(r.headers)}")
-                cookies = refresh_cookies(playwright, headless, debug=debug)
-                continue  # retry with fresh cookies
+        r = requests.get(url, headers=hdrs, cookies=cookies, stream=True, timeout=3600, impersonate="chrome")
 
-            if r.status_code not in (200, 206):
-                print(f"  ERROR: HTTP {r.status_code} for {filename}")
-                return False, cookies
+        if r.status_code == 403:
+            if debug:
+                print(f"  [debug] 403 headers: {dict(r.headers)}")
+            cookies = refresh_cookies(playwright, headless, debug=debug)
+            continue  # retry with fresh cookies
 
-            resuming = r.status_code == 206
-            start = start_byte if resuming else 0
-            ssh_write = f"cat >> '{remote_path}'" if resuming else f"cat > '{remote_path}'"
-            ssh_proc = subprocess.Popen(["ssh", ssh_alias, ssh_write], stdin=subprocess.PIPE)
+        if r.status_code not in (200, 206):
+            print(f"  ERROR: HTTP {r.status_code} for {filename}")
+            return False, cookies
 
-            with tqdm(
-                total=expected_size,
-                initial=start,
-                unit="B", unit_scale=True, unit_divisor=1024,
-                desc=filename[:50], ncols=100,
-            ) as pbar:
-                for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    ssh_proc.stdin.write(chunk)
-                    pbar.update(len(chunk))
+        resuming = r.status_code == 206
+        start = start_byte if resuming else 0
+        ssh_write = f"cat >> '{remote_path}'" if resuming else f"cat > '{remote_path}'"
+        ssh_proc = subprocess.Popen(["ssh", ssh_alias, ssh_write], stdin=subprocess.PIPE)
 
-            ssh_proc.stdin.close()
-            ssh_proc.wait()
+        with tqdm(
+            total=expected_size,
+            initial=start,
+            unit="B", unit_scale=True, unit_divisor=1024,
+            desc=filename[:50], ncols=100,
+        ) as pbar:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                ssh_proc.stdin.write(chunk)
+                pbar.update(len(chunk))
 
-            if ssh_proc.returncode != 0:
-                print(f"  ERROR: SSH pipe failed for {filename}")
-                return False, cookies
+        ssh_proc.stdin.close()
+        ssh_proc.wait()
 
-            return True, cookies
+        if ssh_proc.returncode != 0:
+            print(f"  ERROR: SSH pipe failed for {filename}")
+            return False, cookies
+
+        return True, cookies
 
     print(f"  ERROR: failed after 3 attempts (persistent 403) for {filename}")
     return False, cookies
