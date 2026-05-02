@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "opencv-python>=4.13.0.92",
+    "playwright>=1.59.0",
     "pydantic>=2.12.5",
     "scikit-image>=0.26.0",
     "setuptools<82",
