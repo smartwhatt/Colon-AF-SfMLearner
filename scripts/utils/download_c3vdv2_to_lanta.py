@@ -26,15 +26,23 @@ HEADERS = {
 }
 CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB — larger chunks reduce syscall overhead
 
-# SSH multiplexing: reuse connections instead of re-handshaking for every stat/pipe call
-_SSH_CTRL = os.path.join(tempfile.gettempdir(), "lanta_dl_%C")
-SSH_OPTS = [
-    "-o", "ControlMaster=auto",
-    "-o", f"ControlPath={_SSH_CTRL}",
-    "-o", "ControlPersist=300",
-    "-o", "Compression=no",   # zip files don't compress further; saves CPU
-    "-o", "StrictHostKeyChecking=no",
-]
+# SSH ControlMaster multiplexing (Unix only — not supported by Windows OpenSSH)
+_IS_WINDOWS = sys.platform == "win32"
+if not _IS_WINDOWS:
+    _SSH_CTRL = os.path.join(tempfile.gettempdir(), "lanta_dl_%C")
+    SSH_OPTS = [
+        "-o", "ControlMaster=auto",
+        "-o", f"ControlPath={_SSH_CTRL}",
+        "-o", "ControlPersist=300",
+        "-o", "Compression=no",
+        "-o", "StrictHostKeyChecking=no",
+    ]
+else:
+    # Windows OpenSSH doesn't support ControlMaster; keep remaining useful opts
+    SSH_OPTS = [
+        "-o", "Compression=no",
+        "-o", "StrictHostKeyChecking=no",
+    ]
 
 
 def ssh_run(ssh_alias, remote_cmd, **kwargs):
