@@ -404,16 +404,24 @@ def main():
                 with pos_lock:
                     available_pos.append(pos)
 
-        with ThreadPoolExecutor(max_workers=args.parallel) as pool:
-            futures = {pool.submit(worker_with_pos, item): item for item in work_items}
-            for fut in as_completed(futures):
-                filename, ok = fut.result()
-                if not ok:
-                    failed.append(filename)
+        try:
+            with ThreadPoolExecutor(max_workers=args.parallel) as pool:
+                futures = {pool.submit(worker_with_pos, item): item for item in work_items}
+                for fut in as_completed(futures):
+                    filename, ok = fut.result()
+                    if not ok:
+                        failed.append(filename)
+        except KeyboardInterrupt:
+            print("\n\nInterrupted. Partial files on LANTA will be resumed next run.")
+            os._exit(130)
 
         # Unzip sequentially after all downloads (avoids overloading LANTA I/O)
-        for filename in unzip_queue:
-            unzip_on_lanta(filename, args.ssh_alias, args.remote_dir, args.delete_zip)
+        try:
+            for filename in unzip_queue:
+                unzip_on_lanta(filename, args.ssh_alias, args.remote_dir, args.delete_zip)
+        except KeyboardInterrupt:
+            print("\n\nInterrupted during unzip.")
+            os._exit(130)
 
     print("\n" + "=" * 100)
     print(f"Done. {total - len(failed)}/{total} files transferred successfully.")
