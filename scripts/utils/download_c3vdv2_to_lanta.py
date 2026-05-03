@@ -173,8 +173,12 @@ def batch_check_remote(ssh_alias, remote_dir, files, check_extract=True):
             + (f"ex=$([ -d '{ed}' ] && echo 1 || echo 0); " if check_extract else "ex=0; ")
             + f"echo '{fn}|'$sz'|'$ex"
         )
-    script = "; ".join(parts)
-    result = ssh_run(ssh_alias, script, capture_output=True, text=True)
+    script = "\n".join(parts) + "\n"
+    # Pipe script via stdin to avoid Windows 8191-char command-line limit
+    result = subprocess.run(
+        ["ssh"] + SSH_OPTS + ["-T", ssh_alias],
+        input=script, capture_output=True, text=True,
+    )
     info = {}
     for line in result.stdout.splitlines():
         line = line.strip()
