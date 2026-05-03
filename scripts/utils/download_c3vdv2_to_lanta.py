@@ -372,6 +372,9 @@ def main():
             total=total, unit="file", desc="Overall", ncols=100, position=0, leave=True,
         )
 
+        # Separate single-worker pool for unzip so it never blocks a download slot
+        unzip_pool = ThreadPoolExecutor(max_workers=1)
+
         def worker(f, known_remote_size, pos):
             file_id = f["dataFile"]["id"]
             filename = f["label"]
@@ -388,9 +391,8 @@ def main():
                 tqdm_pos=pos,
                 debug=args.debug,
             )
-            # Unzip immediately after each file so space is freed as we go
             if ok and not args.no_unzip and filename.endswith(".zip"):
-                unzip_on_lanta(filename, args.ssh_alias, args.remote_dir, args.delete_zip)
+                unzip_pool.submit(unzip_on_lanta, filename, args.ssh_alias, args.remote_dir, args.delete_zip)
             overall_bar.update(1)
             return filename, ok
 
@@ -417,10 +419,13 @@ def main():
                         failed.append(filename)
         except KeyboardInterrupt:
             overall_bar.close()
+            unzip_pool.shutdown(wait=False)
             print("\n\nInterrupted. Partial files on LANTA will be resumed next run.")
             os._exit(130)
 
         overall_bar.close()
+        tqdm.write("Waiting for any in-progress unzip to finish...")
+        unzip_pool.shutdown(wait=True)
 
     print("\n" + "=" * 100)
     print(f"Done. {total - len(failed)}/{total} files transferred successfully.")
