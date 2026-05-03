@@ -140,13 +140,13 @@ class CookieManager:
         """Refresh only if cookies haven't been updated by another thread already."""
         with self._lock:
             if self._cookies == stale_cookies:
-                print("  [session expired] refreshing Cloudflare cookies...", end=" ", flush=True)
+                tqdm.write("  [session expired] refreshing Cloudflare cookies...")
                 url = f"{BASE_URL}/api/datasets/:persistentId?persistentId=doi:{DOI}"
                 browser, page = launch_browser(self._playwright, self._headless, debug=self._debug)
                 page.goto(url, wait_until="networkidle", timeout=30000)
                 self._cookies = get_browser_cookies(page)
                 browser.close()
-                print(f"got {len(self._cookies)} cookies.")
+                tqdm.write(f"  [session] got {len(self._cookies)} cookies.")
             return dict(self._cookies)
 
 
@@ -264,15 +264,15 @@ def transfer_file(file_id, filename, expected_size, ssh_alias, remote_dir,
 def unzip_on_lanta(filename, ssh_alias, remote_dir, delete_zip):
     remote_path = f"{remote_dir}/{filename}"
     extract_dir = f"{remote_dir}/{filename[:-4]}"
-    tqdm.write(f"  [{filename}] Extracting on LANTA...", end="")
+    tqdm.write(f"  [{filename}] Extracting on LANTA...")
     cmd = f"unzip -o '{remote_path}' -d '{extract_dir}'"
     if delete_zip:
         cmd += f" && rm '{remote_path}'"
     result = ssh_run(ssh_alias, cmd, capture_output=True)
     if result.returncode != 0:
-        tqdm.write(f"FAILED\n  {result.stderr.decode().strip()}")
+        tqdm.write(f"  [{filename}] Extraction FAILED: {result.stderr.decode().strip()}")
     else:
-        tqdm.write(" done.")
+        tqdm.write(f"  [{filename}] Extracted{' and zip deleted' if delete_zip else ''}.")
 
 
 # -----------------------------
@@ -365,7 +365,6 @@ def main():
         print(f"\nStarting transfers ({total} files, {args.parallel} parallel)...\n")
 
         failed = []
-        lock = threading.Lock()
 
         # Position 0 = overall bar; per-file bars start at position 1
         overall_bar = tqdm(
