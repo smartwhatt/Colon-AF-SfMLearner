@@ -365,8 +365,12 @@ def main():
         print(f"\nStarting transfers ({total} files, {args.parallel} parallel)...\n")
 
         failed = []
-        unzip_queue = []
         lock = threading.Lock()
+
+        # Position 0 = overall bar; per-file bars start at position 1
+        overall_bar = tqdm(
+            total=total, unit="file", desc="Overall", ncols=100, position=0, leave=True,
+        )
 
         def worker(f, known_remote_size, pos):
             file_id = f["dataFile"]["id"]
@@ -384,15 +388,15 @@ def main():
                 tqdm_pos=pos,
                 debug=args.debug,
             )
+            # Unzip immediately after each file so space is freed as we go
             if ok and not args.no_unzip and filename.endswith(".zip"):
-                with lock:
-                    unzip_queue.append(filename)
+                unzip_on_lanta(filename, args.ssh_alias, args.remote_dir, args.delete_zip)
+            overall_bar.update(1)
             return filename, ok
 
-        # Use a pool of tqdm positions (one bar per parallel slot)
-        positions = list(range(args.parallel))
+        # Per-file bars occupy positions 1..parallel; position 0 is the overall bar
         pos_lock = threading.Lock()
-        available_pos = list(positions)
+        available_pos = list(range(1, args.parallel + 1))
 
         def worker_with_pos(item):
             f, known_remote_size = item
@@ -412,16 +416,11 @@ def main():
                     if not ok:
                         failed.append(filename)
         except KeyboardInterrupt:
+            overall_bar.close()
             print("\n\nInterrupted. Partial files on LANTA will be resumed next run.")
             os._exit(130)
 
-        # Unzip sequentially after all downloads (avoids overloading LANTA I/O)
-        try:
-            for filename in unzip_queue:
-                unzip_on_lanta(filename, args.ssh_alias, args.remote_dir, args.delete_zip)
-        except KeyboardInterrupt:
-            print("\n\nInterrupted during unzip.")
-            os._exit(130)
+        overall_bar.close()
 
     print("\n" + "=" * 100)
     print(f"Done. {total - len(failed)}/{total} files transferred successfully.")
