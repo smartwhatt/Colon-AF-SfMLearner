@@ -184,9 +184,9 @@ def transfer_file(file_id, filename, expected_size, ssh_alias, remote_dir,
         tqdm.write(f"  [{filename}] Resuming from {remote_size / 1024**2:.1f} MB / {expected_size / 1024**2:.1f} MB")
 
     cookies = cookie_mgr.get()
+    start_byte = max(remote_size, 0)  # already known — no extra SSH call
 
     for attempt in range(3):
-        start_byte = max(get_remote_file_size(ssh_alias, remote_path), 0)
         hdrs = {**HEADERS}
         if start_byte > 0:
             hdrs["Range"] = f"bytes={start_byte}-"
