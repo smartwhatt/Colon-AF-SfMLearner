@@ -28,21 +28,24 @@ CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB — larger chunks reduce syscall overhead
 
 # SSH ControlMaster multiplexing (Unix only — not supported by Windows OpenSSH)
 _IS_WINDOWS = sys.platform == "win32"
+_KEEPALIVE_OPTS = [
+    "-o", "ServerAliveInterval=15",   # send keepalive every 15s so idle pipe doesn't drop
+    "-o", "ServerAliveCountMax=4",
+    "-o", "Compression=no",           # zip files don't compress further; saves CPU
+    "-o", "StrictHostKeyChecking=no",
+]
+
 if not _IS_WINDOWS:
     _SSH_CTRL = os.path.join(tempfile.gettempdir(), "lanta_dl_%C")
     SSH_OPTS = [
         "-o", "ControlMaster=auto",
         "-o", f"ControlPath={_SSH_CTRL}",
         "-o", "ControlPersist=300",
-        "-o", "Compression=no",
-        "-o", "StrictHostKeyChecking=no",
+        *_KEEPALIVE_OPTS,
     ]
 else:
-    # Windows OpenSSH doesn't support ControlMaster; keep remaining useful opts
-    SSH_OPTS = [
-        "-o", "Compression=no",
-        "-o", "StrictHostKeyChecking=no",
-    ]
+    # Windows OpenSSH doesn't support ControlMaster
+    SSH_OPTS = _KEEPALIVE_OPTS
 
 
 def ssh_run(ssh_alias, remote_cmd, **kwargs):
@@ -258,8 +261,8 @@ def main():
                         help="Show browser window")
     parser.add_argument("--debug", action="store_true",
                         help="Print browser/cookie/HTTP debug info")
-    parser.add_argument("--parallel", type=int, default=3, metavar="N",
-                        help="Number of simultaneous file transfers (default: 3)")
+    parser.add_argument("--parallel", type=int, default=1, metavar="N",
+                        help="Number of simultaneous file transfers (default: 1; increase only if JHU allows it)")
     args = parser.parse_args()
 
     print(f"SSH alias:  {args.ssh_alias}")
