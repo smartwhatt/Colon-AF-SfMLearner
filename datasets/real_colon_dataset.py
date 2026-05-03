@@ -12,7 +12,7 @@ class REALColonDataset(MonoDataset):
     """
     Dataset class for REAL-Colon, modelled on SCAREDRAWDataset.
 
-    REAL-Colon structure on disk:
+    REAL-Colon structure on disk after the official download/extract step:
       <data_root>/
         SSS-VVV_frames/           e.g. 001-001_frames/
           SSS-VVV_1.jpg           frames named <seq_id>_<t>.jpg (1-indexed, no padding)
@@ -21,12 +21,13 @@ class REALColonDataset(MonoDataset):
         SSS-VVV_annotation/       bounding-box XML -- NOT used here
         video_info.csv            fps, num_frames, endoscope_brand, ...
         lesion_info.csv           polyp metadata -- NOT used here
+        dataset_description.md
 
     Key facts:
       - Frame filenames: <seq_id>_<t>.jpg  (e.g. 001-001_42.jpg)
         Source: official annotation XML: <filename>SSS-VVV_t.jpg</filename>
         Index t is 1-indexed with NO zero-padding.
-      - Native resolution: 1240 x 1080 (width x height)
+      - Annotation XML reports frame size 1240 x 1080 (width x height).
       - Endoscope: Olympus CF-HQ290L (Olympus sequences) or Fujifilm (other sequences)
         The CF-HQ290L is a conventional wide-angle scope with ~170 deg FOV and
         standard perspective/mild-fisheye optics. It is NOT an omnidirectional
@@ -51,7 +52,7 @@ class REALColonDataset(MonoDataset):
       e.g.:
         001-001 42 l
       side is always 'l'. frame_index is the integer matching the filename.
-      Generate with scripts/generate_splits_realcolon.py.
+      Generate splits/real_colon/*_files.txt with scripts/generate_splits_realcolon.py.
     """
 
     def __init__(self, *args, **kwargs):

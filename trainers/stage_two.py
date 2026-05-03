@@ -93,7 +93,7 @@ class StageTwoTrainer(BaseTrainer):
             self.parameters_to_train += list(self.models["specular"].parameters())
 
     def load_model(self):
-        """Load weights and freeze every loaded model (position net from Stage 1)."""
+        """Load frozen position weights and optional trainable Stage 2 weights."""
         import os
         self.opt.load_weights_folder = os.path.expanduser(self.opt.load_weights_folder)
         assert os.path.isdir(self.opt.load_weights_folder), \
@@ -104,17 +104,38 @@ class StageTwoTrainer(BaseTrainer):
             if n not in self.models:
                 continue
             print("Loading {} weights...".format(n))
-            path = os.path.join(self.opt.load_weights_folder, "{}.pth".format(n))
-            model_dict = self.models[n].state_dict()
-            pretrained_dict = torch.load(path, map_location=self.device)
-            pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
-            model_dict.update(pretrained_dict)
-            self.models[n].load_state_dict(model_dict)
+            self._load_model_weights(self.opt.load_weights_folder, n)
             self.models[n].eval()
             for param in self.models[n].parameters():
                 param.requires_grad = False
 
+        if getattr(self.opt, "load_trainable_weights_folder", None):
+            trainable_folder = os.path.expanduser(self.opt.load_trainable_weights_folder)
+            assert os.path.isdir(trainable_folder), \
+                "Cannot find folder {}".format(trainable_folder)
+            print("loading trainable model weights from folder {}".format(trainable_folder))
+            for n in self.opt.trainable_models_to_load:
+                if n not in self.models or n in self.opt.models_to_load:
+                    continue
+                path = os.path.join(trainable_folder, "{}.pth".format(n))
+                if not os.path.isfile(path):
+                    print("Skipping {} weights (not found)".format(n))
+                    continue
+                print("Loading {} weights without freezing...".format(n))
+                self._load_model_weights(trainable_folder, n)
+                for param in self.models[n].parameters():
+                    param.requires_grad = True
+
         print("Adam is randomly initialized")
+
+    def _load_model_weights(self, weights_folder, model_name):
+        import os
+        path = os.path.join(weights_folder, "{}.pth".format(model_name))
+        model_dict = self.models[model_name].state_dict()
+        pretrained_dict = torch.load(path, map_location=self.device)
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+        model_dict.update(pretrained_dict)
+        self.models[model_name].load_state_dict(model_dict)
 
     def set_train(self):
         for name in ("encoder", "depth", "transform_encoder", "transform",

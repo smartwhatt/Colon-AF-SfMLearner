@@ -23,6 +23,12 @@ Usage:
         --data_path /data/C3VDv2 --log_dir logs/ --undistort_maps undistort_maps/ \\
         --load_weights_folder logs/c3vdv2_stage1/models/weights_19/ \\
         --w_depth_start 1.0 --w_depth_end 0.3 --w_pose_start 0.5 --w_pose_end 0.1
+
+    # REAL-Colon self-supervised Stage 2 adaptation
+    python train.py --mode stage2 --dataset real_colon --split real_colon \\
+        --data_path /data/REAL-Colon --log_dir logs/real_colon \\
+        --load_weights_folder logs/c3vdv2/stage2/models/weights_19/ \\
+        --load_trainable_weights_folder logs/c3vdv2/stage2/models/weights_19/
 """
 
 from options import MonodepthOptions

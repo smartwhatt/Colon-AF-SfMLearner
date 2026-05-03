@@ -81,14 +81,27 @@ A synthetic colonoscopy dataset with ground truth depth and pose.
 
 ### 3. REAL-Colon
 A large-scale clinical colonoscopy dataset for self-supervised training.
+- **Download:** Use the official helper repository: <https://github.com/cosmoimd/real-colon-dataset>.
 - **Structure:**
   ```text
   /path/to/REAL-Colon/
     001-001_frames/
       001-001_1.jpg
+      001-001_2.jpg
+    001-001_annotation/
     video_info.csv
+    lesion_info.csv
+    dataset_description.md
   ```
-- **Splits:** Generate a `train.txt` in `splits/real_colon/` using the format `<sequence_id> <frame_index> l`.
+- **Generate Splits:**
+  ```shell
+  python scripts/generate_splits_realcolon.py \
+      --data_root /path/to/REAL-Colon \
+      --output_dir splits/real_colon \
+      --train_stride 10
+  ```
+  Split rows use the MonoDataset format `<sequence_id> <frame_index> l`
+  and are written to `train_files.txt`, `val_files.txt`, and `test_files.txt`.
 
 ---
 
@@ -129,9 +142,14 @@ C3VDv2 uses a specific pipeline with supervised depth/pose loss ramping.
 
 ### C. REAL-Colon (Self-Supervised)
 ```shell
-CUDA_VISIBLE_DEVICES=0 python train.py --mode stage2 --dataset real_colon --split real_colon \
-    --data_path /path/to/REAL-Colon --log_dir logs/real_colon
+DATA_PATH=/path/to/REAL-Colon \
+LOAD_WEIGHTS_FOLDER=logs/c3vdv2/stage2/models/weights_19 \
+bash scripts/run_train_real_colon.sh
 ```
+
+`LOAD_WEIGHTS_FOLDER` supplies the frozen Stage 1 registration network. If the
+same folder contains full Stage 2 weights, depth, pose, and transform are also
+warm-started without freezing for REAL-Colon adaptation.
 
 ---
 

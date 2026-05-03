@@ -114,6 +114,22 @@ class TrainingConfig(BaseModel):
         default=["position_encoder", "position"],
         description="model names to load from weights folder",
     )
+    load_trainable_weights_folder: Optional[str] = Field(
+        default=None,
+        description="optional folder of trainable Stage 2 weights to warm-start without freezing",
+    )
+    trainable_models_to_load: List[str] = Field(
+        default=[
+            "encoder",
+            "depth",
+            "transform_encoder",
+            "transform",
+            "pose_encoder",
+            "pose",
+            "specular",
+        ],
+        description="trainable model names to load from load_trainable_weights_folder",
+    )
 
     # ── C3VDv2 / fine-tuning ──────────────────────────────────────────────────
     undistort_maps: str = Field(

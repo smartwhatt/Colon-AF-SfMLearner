@@ -58,6 +58,12 @@ from tensorboardX import SummaryWriter
 # Registry: maps --dataset argument to dataset class
 DATASET_REGISTRY = {
     "endovis": datasets.SCAREDRAWDataset,
+    "real_colon": datasets.REALColonDataset,
+}
+
+DATASET_IMAGE_EXT = {
+    "endovis": ".png",
+    "real_colon": ".jpg",
 }
 
 
@@ -169,7 +175,7 @@ class BaseTrainer(ABC):
         )
         train_filenames = readlines(fpath.format("train"))
         val_filenames = readlines(fpath.format("val"))
-        img_ext = ".png"
+        img_ext = DATASET_IMAGE_EXT.get(self.opt.dataset, ".png")
 
         train_dataset = dataset_cls(
             self.opt.data_path,

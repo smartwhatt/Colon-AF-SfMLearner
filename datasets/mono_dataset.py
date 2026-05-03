@@ -50,7 +50,10 @@ class MonoDataset(data.Dataset):
         self.height = height
         self.width = width
         self.num_scales = num_scales
-        self.interp = Image.ANTIALIAS
+        if hasattr(Image, "Resampling"):
+            self.interp = Image.Resampling.LANCZOS
+        else:
+            self.interp = Image.ANTIALIAS
 
         self.frame_idxs = frame_idxs
 
