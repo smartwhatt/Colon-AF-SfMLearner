@@ -157,25 +157,48 @@ def format_size(bytes_size):
     return f"{bytes_size / 1024 / 1024:.2f} MB"
 
 
-def get_remote_file_size(ssh_alias, remote_path):
-    result = ssh_run(
-        ssh_alias,
-        f"stat -c%s '{remote_path}' 2>/dev/null || echo -1",
-        capture_output=True, text=True,
-    )
-    try:
-        return int(result.stdout.strip())
-    except ValueError:
-        return -1
+def batch_check_remote(ssh_alias, remote_dir, files, check_extract=True):
+    """Single SSH call to get every file's remote size and (optionally) extract-dir existence.
+
+    Returns dict: filename -> {"size": int, "extracted": bool}
+    """
+    parts = []
+    for f in files:
+        fn = f["label"]
+        rp = f"{remote_dir}/{fn}"
+        ed = f"{remote_dir}/{fn[:-4]}"
+        # Print "filename|size|extracted" — all in one shell session
+        parts.append(
+            f"sz=$(stat -c%s '{rp}' 2>/dev/null || echo -1); "
+            + (f"ex=$([ -d '{ed}' ] && echo 1 || echo 0); " if check_extract else "ex=0; ")
+            + f"echo '{fn}|'$sz'|'$ex"
+        )
+    script = "; ".join(parts)
+    result = ssh_run(ssh_alias, script, capture_output=True, text=True)
+    info = {}
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line or "|" not in line:
+            continue
+        parts_line = line.split("|")
+        if len(parts_line) < 3:
+            continue
+        fn = parts_line[0]
+        try:
+            size = int(parts_line[1])
+        except ValueError:
+            size = -1
+        extracted = parts_line[2] == "1"
+        info[fn] = {"size": size, "extracted": extracted}
+    return info
 
 
 def transfer_file(file_id, filename, expected_size, ssh_alias, remote_dir,
-                  cookie_mgr, tqdm_pos=0, debug=False):
+                  cookie_mgr, remote_size=-1, tqdm_pos=0, debug=False):
     """Stream JHU → SSH pipe → LANTA. Refreshes cookies on 403. Zero local disk."""
     remote_path = f"{remote_dir}/{filename}"
     url = f"{BASE_URL}/api/access/datafile/{file_id}"
 
-    remote_size = get_remote_file_size(ssh_alias, remote_path)
     if remote_size == expected_size:
         tqdm.write(f"  [{filename}] Already complete on LANTA, skipping.")
         return True
@@ -184,7 +207,7 @@ def transfer_file(file_id, filename, expected_size, ssh_alias, remote_dir,
         tqdm.write(f"  [{filename}] Resuming from {remote_size / 1024**2:.1f} MB / {expected_size / 1024**2:.1f} MB")
 
     cookies = cookie_mgr.get()
-    start_byte = max(remote_size, 0)  # already known — no extra SSH call
+    start_byte = max(remote_size, 0)
 
     for attempt in range(3):
         hdrs = {**HEADERS}
@@ -316,31 +339,32 @@ def main():
         print("\nCreating remote directory...")
         ssh_run(args.ssh_alias, f"mkdir -p '{args.remote_dir}'", check=True)
 
-        total = len(selected)
+        selected_files = [files[i] for i in selected]
+
+        print(f"Checking remote state for {len(selected_files)} files (1 SSH call)...")
+        remote_info = batch_check_remote(
+            args.ssh_alias, args.remote_dir, selected_files,
+            check_extract=not args.no_unzip,
+        )
+
+        # Filter out already-done files
+        work_items = []
+        for f in selected_files:
+            filename = f["label"]
+            info = remote_info.get(filename, {"size": -1, "extracted": False})
+            if filename.endswith(".zip") and not args.no_unzip and info["extracted"]:
+                print(f"  [{filename}] Already extracted on LANTA, skipping.")
+                continue
+            work_items.append((f, info["size"]))
+
+        total = len(work_items)
         print(f"\nStarting transfers ({total} files, {args.parallel} parallel)...\n")
 
-        # Pre-filter already-extracted zips (cheap check before spawning threads)
-        work_items = []
-        for i in selected:
-            f = files[i]
-            filename = f["label"]
-            if filename.endswith(".zip") and not args.no_unzip:
-                extract_dir = f"{args.remote_dir}/{filename[:-4]}"
-                check = ssh_run(
-                    args.ssh_alias,
-                    f"test -d '{extract_dir}' && echo exists || echo missing",
-                    capture_output=True, text=True,
-                )
-                if check.stdout.strip() == "exists":
-                    print(f"  [{filename}] Already extracted on LANTA, skipping.")
-                    continue
-            work_items.append(f)
-
         failed = []
-        unzip_queue = []  # (filename,) items to unzip after all downloads
+        unzip_queue = []
         lock = threading.Lock()
 
-        def worker(f, pos):
+        def worker(f, known_remote_size, pos):
             file_id = f["dataFile"]["id"]
             filename = f["label"]
             expected_size = f["dataFile"]["filesize"]
@@ -352,6 +376,7 @@ def main():
                 ssh_alias=args.ssh_alias,
                 remote_dir=args.remote_dir,
                 cookie_mgr=cookie_mgr,
+                remote_size=known_remote_size,
                 tqdm_pos=pos,
                 debug=args.debug,
             )
@@ -365,17 +390,18 @@ def main():
         pos_lock = threading.Lock()
         available_pos = list(positions)
 
-        def worker_with_pos(f):
+        def worker_with_pos(item):
+            f, known_remote_size = item
             with pos_lock:
                 pos = available_pos.pop(0)
             try:
-                return worker(f, pos)
+                return worker(f, known_remote_size, pos)
             finally:
                 with pos_lock:
                     available_pos.append(pos)
 
         with ThreadPoolExecutor(max_workers=args.parallel) as pool:
-            futures = {pool.submit(worker_with_pos, f): f for f in work_items}
+            futures = {pool.submit(worker_with_pos, item): item for item in work_items}
             for fut in as_completed(futures):
                 filename, ok = fut.result()
                 if not ok:
@@ -386,8 +412,7 @@ def main():
             unzip_on_lanta(filename, args.ssh_alias, args.remote_dir, args.delete_zip)
 
     print("\n" + "=" * 100)
-    done = len(work_items) - len(failed)
-    print(f"Done. {done}/{len(work_items)} files transferred successfully.")
+    print(f"Done. {total - len(failed)}/{total} files transferred successfully.")
     if failed:
         print(f"Failed: {', '.join(failed)}")
 
