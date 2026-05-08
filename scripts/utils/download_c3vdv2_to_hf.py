@@ -80,9 +80,9 @@ dataset_info:
   - name: rgb_next
     dtype: image
   - name: depth
-    dtype: binary
+    dtype: image
   - name: occlusion
-    dtype: binary
+    dtype: image
   - name: pose_curr2prev
     sequence: float64
   - name: pose_curr2next
@@ -135,8 +135,8 @@ perspective crops (512×512) using the Scaramuzza camera model from
 | `rgb_prev` | image | undistorted 512×512 PNG (HF Image feature) |
 | `rgb_curr` | image | undistorted 512×512 PNG (HF Image feature) |
 | `rgb_next` | image | undistorted 512×512 PNG (HF Image feature) |
-| `depth` | binary | float32 `.tobytes()`, 512×512, metric metres |
-| `occlusion` | binary | uint8 `.tobytes()`, 512×512 binary mask (1 = occluded) |
+| `depth` | image | 16-bit PNG, 512×512, uint16 value → metres: `val / 65535 * 0.1` |
+| `occlusion` | image | 8-bit PNG, 512×512, 255 = occluded, 0 = clear |
 | `pose_curr2prev` | list[float64] | 16-value row-major 4×4 relative pose |
 | `pose_curr2next` | list[float64] | 16-value row-major 4×4 relative pose |
 | `K` | list[float32] | 9-value row-major 3×3 normalised camera intrinsics |
@@ -160,9 +160,9 @@ import io
 ds = load_dataset("{repo_id}", split="train", streaming=True)
 
 for row in ds:
-    rgb = np.array(row["rgb_curr"])                                     # 512×512×3 uint8 PIL Image
-    depth = np.frombuffer(row["depth"], np.float32).reshape(512, 512)  # metres
-    occ = np.frombuffer(row["occlusion"], np.uint8).reshape(512, 512)  # binary mask
+    rgb   = np.array(row["rgb_curr"])                                    # 512×512×3 uint8
+    depth = np.array(row["depth"]).astype(np.float32) / 65535.0 * 0.1  # 512×512 metres
+    occ   = np.array(row["occlusion"]) > 0                              # 512×512 bool mask
     T_curr2prev = np.array(row["pose_curr2prev"]).reshape(4, 4)
     K = np.array(row["K"]).reshape(3, 3)
 ```
@@ -312,11 +312,20 @@ def _load_rgb(seq_dir, idx, map1, map2):
 
 
 def _load_depth(seq_dir, idx, map1, map2):
-    path = os.path.join(seq_dir, "depth", f"{idx:04d}_depth.tiff")
-    return undistort_depth(decode_depth_tiff(path), map1, map2)
+    """Load depth, undistort, return as HF Image struct (16-bit PNG).
+    Converts metric metres back to uint16 (0-65535 = 0-100mm) to preserve precision.
+    """
+    depth_m = undistort_depth(decode_depth_tiff(
+                              os.path.join(seq_dir, "depth", f"{idx:04d}_depth.tiff")), map1, map2)
+    depth_mm_u16 = (depth_m * 1000.0 / 100.0 * 65535.0).clip(0, 65535).astype(np.uint16)
+    ok, buf = cv2.imencode(".png", depth_mm_u16)
+    if not ok:
+        raise RuntimeError("Depth PNG encoding failed")
+    return {"bytes": bytes(buf), "path": None}
 
 
 def _load_occlusion(seq_dir, idx, map1, map2):
+    """Load occlusion mask, undistort, return as HF Image struct (8-bit PNG)."""
     base = os.path.join(seq_dir, "occlusions", f"{idx:04d}_occlusion")
     for ext in (".tiff", ".png"):
         candidate = base + ext
@@ -324,8 +333,13 @@ def _load_occlusion(seq_dir, idx, map1, map2):
             occ = cv2.imread(candidate, cv2.IMREAD_GRAYSCALE)
             if occ is not None:
                 occ = cv2.remap(occ, map1, map2, interpolation=cv2.INTER_NEAREST)
-                return (occ == 255).astype(np.uint8)
-    return np.zeros((UNDISTORT_HEIGHT, UNDISTORT_WIDTH), dtype=np.uint8)
+                mask = (occ == 255).astype(np.uint8) * 255
+                ok, buf = cv2.imencode(".png", mask)
+                if ok:
+                    return {"bytes": bytes(buf), "path": None}
+    blank = np.zeros((UNDISTORT_HEIGHT, UNDISTORT_WIDTH), dtype=np.uint8)
+    _, buf = cv2.imencode(".png", blank)
+    return {"bytes": bytes(buf), "path": None}
 
 
 # ---------------------------------------------------------------------------
@@ -350,8 +364,8 @@ PARQUET_SCHEMA = pa.schema([
     pa.field("rgb_prev",       _HF_IMAGE_TYPE),
     pa.field("rgb_curr",       _HF_IMAGE_TYPE),
     pa.field("rgb_next",       _HF_IMAGE_TYPE),
-    pa.field("depth",          pa.binary()),
-    pa.field("occlusion",      pa.binary()),
+    pa.field("depth",          _HF_IMAGE_TYPE),
+    pa.field("occlusion",      _HF_IMAGE_TYPE),
     pa.field("pose_curr2prev", pa.list_(pa.float64())),
     pa.field("pose_curr2next", pa.list_(pa.float64())),
     pa.field("K",              pa.list_(pa.float32())),
