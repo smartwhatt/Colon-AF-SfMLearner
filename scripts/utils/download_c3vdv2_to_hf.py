@@ -558,7 +558,12 @@ def main():
 
             zip_ok = True
             for seq_dir in seqs:
-                seq_name = os.path.basename(seq_dir)
+                # If the zip had no top-level folder, seq_dir == extract_dir and
+                # basename would be "name_extracted". Use the zip stem instead.
+                if os.path.abspath(seq_dir) == os.path.abspath(extract_dir):
+                    seq_name = filename.replace(".zip", "")
+                else:
+                    seq_name = os.path.basename(seq_dir)
                 split = assign_split(
                     seq_name, split_map,
                     args.train_trials, args.val_trials, args.test_trials,
