@@ -15,7 +15,6 @@ import re
 import sys
 import shutil
 import zipfile
-import tempfile
 import argparse
 from pathlib import Path
 
@@ -422,8 +421,8 @@ def process_sequence(seq_dir, seq_name, split, map1, map2,
                 rgb_prev = _encode_png(_load_rgb(seq_dir, idx_prev, map1, map2))
                 rgb_curr = _encode_png(_load_rgb(seq_dir, idx_curr, map1, map2))
                 rgb_next = _encode_png(_load_rgb(seq_dir, idx_next, map1, map2))
-                depth = _load_depth(seq_dir, idx_curr, map1, map2).tobytes()
-                occ = _load_occlusion(seq_dir, idx_curr, map1, map2).tobytes()
+                depth = _load_depth(seq_dir, idx_curr, map1, map2)
+                occ = _load_occlusion(seq_dir, idx_curr, map1, map2)
             except FileNotFoundError as exc:
                 tqdm.write(f"      WARNING: missing file, skipping frame {idx_curr}: {exc}")
                 continue
@@ -484,8 +483,8 @@ def main():
                         help="Dir with undistort_map1.npy / undistort_map2.npy")
     parser.add_argument("--hf-token", default=None,
                         help="HF token (default: ~/.cache/huggingface/token or HF_TOKEN env)")
-    parser.add_argument("--tmp-dir", default=None,
-                        help="Temp dir for downloads/extraction (default: system temp)")
+    parser.add_argument("--tmp-dir", default="/tmp/c3vdv2_hf",
+                        help="Temp dir for downloads/extraction (default: /tmp/c3vdv2_hf)")
     parser.add_argument("--shard-size", type=int, default=500,
                         help="Rows per Parquet shard (default: 500)")
     parser.add_argument("--indices", nargs="*", type=int, default=None,
@@ -562,7 +561,7 @@ def main():
     print(f"  Maps loaded (output: {UNDISTORT_WIDTH}×{UNDISTORT_HEIGHT})")
 
     # ---- Temp dir ---------------------------------------------------------
-    tmp_base = args.tmp_dir or tempfile.mkdtemp(prefix="c3vdv2_hf_")
+    tmp_base = args.tmp_dir
     os.makedirs(tmp_base, exist_ok=True)
     print(f"Temp dir: {tmp_base}\n")
 
