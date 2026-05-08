@@ -624,7 +624,13 @@ def main():
         filename = f["label"]
         expected_size = f["dataFile"]["filesize"]
 
+        zip_stem = filename.replace(".zip", "")
+        done_sentinel = f"_done/{zip_stem}.done"
         print(f"\n[{n}/{total}] {filename} ({fmt_size(expected_size)})")
+
+        if done_sentinel in existing_hf:
+            print("  Already fully uploaded (sentinel found), skipping.")
+            continue
 
         zip_path = download_zip(file_id, filename, expected_size, tmp_base)
         if zip_path is None:
@@ -672,6 +678,17 @@ def main():
                 zip_ok = False
 
         if zip_ok:
+            try:
+                api.upload_file(
+                    path_or_fileobj=b"done",
+                    path_in_repo=done_sentinel,
+                    repo_id=args.repo_id,
+                    repo_type="dataset",
+                    commit_message=f"Mark {zip_stem} complete",
+                )
+                existing_hf.add(done_sentinel)
+            except Exception as e:
+                print(f"  WARNING: could not write done sentinel: {e}")
             shutil.rmtree(extract_dir, ignore_errors=True)
             os.remove(zip_path)
         else:
