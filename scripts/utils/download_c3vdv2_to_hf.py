@@ -30,7 +30,7 @@ from huggingface_hub import HfApi, create_repo
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-from datasets.c3vdv2_dataset import (
+from colon_datasets.c3vdv2_dataset import (
     load_undistort_maps,
     apply_undistort,
     decode_depth_tiff,
@@ -68,9 +68,17 @@ tags:
 - medical
 dataset_info:
   features:
+  - name: dataset_name
+    dtype: string
   - name: sequence
     dtype: string
   - name: frame_idx
+    dtype: int32
+  - name: frame_idx_prev
+    dtype: int32
+  - name: frame_idx_curr
+    dtype: int32
+  - name: frame_idx_next
     dtype: int32
   - name: rgb_prev
     dtype: image
@@ -88,6 +96,18 @@ dataset_info:
     sequence: float64
   - name: K
     sequence: float32
+  - name: has_depth
+    dtype: bool
+  - name: has_occlusion
+    dtype: bool
+  - name: has_pose
+    dtype: bool
+  - name: source_fps
+    dtype: float32
+  - name: target_fps
+    dtype: float32
+  - name: frame_stride
+    dtype: int32
   splits:
   - name: train
   - name: val
@@ -131,6 +151,7 @@ perspective crops (512×512) using the Scaramuzza camera model from
 |--------|-------|-------------|
 | `sequence` | string | sequence name, e.g. `c1_ascending_t1_v1` |
 | `frame_idx` | int32 | centre frame index |
+| `frame_idx_prev/curr/next` | int32 | original frame indices in the triplet |
 | `rgb_prev` | image | undistorted 512×512 PNG (HF Image feature) |
 | `rgb_curr` | image | undistorted 512×512 PNG (HF Image feature) |
 | `rgb_next` | image | undistorted 512×512 PNG (HF Image feature) |
@@ -139,6 +160,8 @@ perspective crops (512×512) using the Scaramuzza camera model from
 | `pose_curr2prev` | list[float64] | 16-value row-major 4×4 relative pose |
 | `pose_curr2next` | list[float64] | 16-value row-major 4×4 relative pose |
 | `K` | list[float32] | 9-value row-major 3×3 normalised camera intrinsics |
+| `has_depth/has_occlusion/has_pose` | bool | supervised label availability flags |
+| `frame_stride` | int32 | original-frame stride between triplet neighbours |
 
 ## Splits
 
@@ -358,8 +381,12 @@ _K_NORM = np.array(
 _HF_IMAGE_TYPE = pa.struct([pa.field("bytes", pa.binary()), pa.field("path", pa.string())])
 
 PARQUET_SCHEMA = pa.schema([
+    pa.field("dataset_name",    pa.string()),
     pa.field("sequence",       pa.string()),
     pa.field("frame_idx",      pa.int32()),
+    pa.field("frame_idx_prev", pa.int32()),
+    pa.field("frame_idx_curr", pa.int32()),
+    pa.field("frame_idx_next", pa.int32()),
     pa.field("rgb_prev",       _HF_IMAGE_TYPE),
     pa.field("rgb_curr",       _HF_IMAGE_TYPE),
     pa.field("rgb_next",       _HF_IMAGE_TYPE),
@@ -368,6 +395,12 @@ PARQUET_SCHEMA = pa.schema([
     pa.field("pose_curr2prev", pa.list_(pa.float64())),
     pa.field("pose_curr2next", pa.list_(pa.float64())),
     pa.field("K",              pa.list_(pa.float32())),
+    pa.field("has_depth",      pa.bool_()),
+    pa.field("has_occlusion",  pa.bool_()),
+    pa.field("has_pose",       pa.bool_()),
+    pa.field("source_fps",     pa.float32()),
+    pa.field("target_fps",     pa.float32()),
+    pa.field("frame_stride",   pa.int32()),
 ])
 
 
@@ -442,8 +475,12 @@ def process_sequence(seq_dir, seq_name, split, map1, map2,
             T_c2n = relative_pose(poses[pi_curr], poses[pi_next]).flatten().tolist()
 
             rows.append({
+                "dataset_name":    "c3vdv2",
                 "sequence":       seq_name,
                 "frame_idx":      idx_curr,
+                "frame_idx_prev": idx_prev,
+                "frame_idx_curr": idx_curr,
+                "frame_idx_next": idx_next,
                 "rgb_prev":       rgb_prev,
                 "rgb_curr":       rgb_curr,
                 "rgb_next":       rgb_next,
@@ -452,6 +489,12 @@ def process_sequence(seq_dir, seq_name, split, map1, map2,
                 "pose_curr2prev": T_c2p,
                 "pose_curr2next": T_c2n,
                 "K":              _K_NORM,
+                "has_depth":      True,
+                "has_occlusion":  True,
+                "has_pose":       True,
+                "source_fps":     None,
+                "target_fps":     None,
+                "frame_stride":   1,
             })
 
         if not rows:

@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 from layers import disp_to_depth
 from utils import readlines
 from options import MonodepthOptions
-import datasets
+import colon_datasets
 import networks
 
 cv2.setNumThreads(0)  # This speeds up evaluation 5x on our unix systems (OpenCV 3.3.1)
@@ -85,7 +85,7 @@ def evaluate(opt):
 
         encoder_dict = torch.load(encoder_path)
 
-        dataset = datasets.SCAREDRAWDataset(opt.data_path, filenames,
+        dataset = colon_datasets.SCAREDRAWDataset(opt.data_path, filenames,
                                            encoder_dict['height'], encoder_dict['width'],
                                            [0], 4, is_train=False)
         dataloader = DataLoader(dataset, 16, shuffle=False, num_workers=opt.num_workers,

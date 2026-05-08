@@ -26,7 +26,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-import datasets
+import colon_datasets
 import networks
 import numpy as np
 import torch
@@ -57,8 +57,8 @@ from tensorboardX import SummaryWriter
 
 # Registry: maps --dataset argument to dataset class
 DATASET_REGISTRY = {
-    "endovis": datasets.SCAREDRAWDataset,
-    "real_colon": datasets.REALColonDataset,
+    "endovis": colon_datasets.SCAREDRAWDataset,
+    "real_colon": colon_datasets.REALColonDataset,
 }
 
 DATASET_IMAGE_EXT = {
@@ -166,6 +166,9 @@ class BaseTrainer(ABC):
 
     def build_dataloaders(self):
         """Default: SCARED-style splits/{split}/{train,val}_files.txt."""
+        if self.opt.data_source == "hf":
+            return self.build_hf_dataloaders()
+
         dataset_cls = DATASET_REGISTRY[self.opt.dataset]
         fpath = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
@@ -224,6 +227,82 @@ class BaseTrainer(ABC):
             )
         )
 
+    def build_hf_dataloaders(self):
+        """Build loaders for the unified Hugging Face triplet schema."""
+        if not self.opt.hf_repo_id:
+            raise ValueError("--hf_repo_id is required when --data_source hf")
+
+        from colon_datasets.hf_triplet_dataset import build_hf_triplet_dataset
+
+        train_dataset = build_hf_triplet_dataset(
+            repo_id=self.opt.hf_repo_id,
+            split="train",
+            streaming=self.opt.hf_streaming,
+            cache_dir=self.opt.hf_cache_dir,
+            target_size=(self.opt.height, self.opt.width),
+            is_train=True,
+            output_format="trainer",
+            scales=self.opt.scales,
+            shuffle_buffer=self.opt.hf_shuffle_buffer,
+        )
+        val_dataset = build_hf_triplet_dataset(
+            repo_id=self.opt.hf_repo_id,
+            split="val",
+            streaming=self.opt.hf_streaming,
+            cache_dir=self.opt.hf_cache_dir,
+            target_size=(self.opt.height, self.opt.width),
+            is_train=False,
+            output_format="trainer",
+            scales=self.opt.scales,
+            shuffle_buffer=0,
+        )
+
+        # Avoid duplicated samples from wrapping a HF IterableDataset in multiple
+        # PyTorch workers. Cached HF datasets still use normal worker loading.
+        train_workers = 0 if self.opt.hf_streaming else self.opt.num_workers
+        val_workers = 0 if self.opt.hf_streaming else 1
+        self.train_loader = DataLoader(
+            train_dataset,
+            self.opt.batch_size,
+            shuffle=not self.opt.hf_streaming,
+            num_workers=train_workers,
+            pin_memory=True,
+            drop_last=True,
+        )
+        self.val_loader = DataLoader(
+            val_dataset,
+            self.opt.batch_size,
+            shuffle=False,
+            num_workers=val_workers,
+            pin_memory=True,
+            drop_last=False,
+        )
+        self.val_iter = iter(self.val_loader)
+        self.num_total_steps = self._num_total_steps(train_dataset)
+        print(f"Using HF dataset: {self.opt.hf_repo_id}")
+        print(
+            "  mode={} train={} val={}\n".format(
+                "streaming" if self.opt.hf_streaming else "cached",
+                self._dataset_len(train_dataset),
+                self._dataset_len(val_dataset),
+            )
+        )
+
+    def _num_total_steps(self, train_dataset) -> int:
+        if self.opt.steps_per_epoch is not None:
+            return self.opt.steps_per_epoch * self.opt.num_epochs
+        try:
+            return len(train_dataset) // self.opt.batch_size * self.opt.num_epochs
+        except TypeError:
+            return 0
+
+    @staticmethod
+    def _dataset_len(dataset) -> str:
+        try:
+            return f"{len(dataset):,}"
+        except TypeError:
+            return "unknown"
+
     def load_model(self):
         """Load weights into self.models. Default: no freezing."""
         self.opt.load_weights_folder = os.path.expanduser(self.opt.load_weights_folder)
@@ -262,6 +341,8 @@ class BaseTrainer(ABC):
         """Default: single-optimizer step per batch."""
         print("Training")
         self.set_train()
+        if hasattr(self.train_loader.dataset, "set_epoch"):
+            self.train_loader.dataset.set_epoch(self.epoch)
 
         for batch_idx, inputs in enumerate(self.train_loader):
             before_op_time = time.time()
@@ -279,6 +360,11 @@ class BaseTrainer(ABC):
                 self.val()
 
             self.step += 1
+            if (
+                self.opt.steps_per_epoch is not None
+                and batch_idx + 1 >= self.opt.steps_per_epoch
+            ):
+                break
 
         self.model_lr_scheduler.step()
 
@@ -552,7 +638,7 @@ class BaseTrainer(ABC):
         time_sofar = time.time() - self.start_time
         training_time_left = (
             (self.num_total_steps / self.step - 1.0) * time_sofar
-            if self.step > 0
+            if self.step > 0 and self.num_total_steps > 0
             else 0
         )
         print(

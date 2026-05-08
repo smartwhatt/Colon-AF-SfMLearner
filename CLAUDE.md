@@ -132,7 +132,7 @@ Key geometry ops live in `layers.py`: `BackprojectDepth`, `Project3D`, `SpatialT
 
 ## Datasets
 
-All datasets inherit from `datasets/mono_dataset.py` (`MonoDataset`), which handles multi-scale resizing, color augmentation, and frame loading.
+All local datasets inherit from `colon_datasets/mono_dataset.py` (`MonoDataset`), which handles multi-scale resizing, color augmentation, and frame loading.
 
 | Class | File | Camera | Notes |
 |-------|------|--------|-------|

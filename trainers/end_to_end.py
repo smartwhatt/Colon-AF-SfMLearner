@@ -141,6 +141,9 @@ class EndToEndTrainer(BaseTrainer):
 
     def run_epoch(self):
         print("Training")
+        if hasattr(self.train_loader.dataset, "set_epoch"):
+            self.train_loader.dataset.set_epoch(self.epoch)
+
         for batch_idx, inputs in enumerate(self.train_loader):
             before_op_time = time.time()
 
@@ -165,6 +168,11 @@ class EndToEndTrainer(BaseTrainer):
                 self.log("train", inputs, outputs, losses)
 
             self.step += 1
+            if (
+                self.opt.steps_per_epoch is not None
+                and batch_idx + 1 >= self.opt.steps_per_epoch
+            ):
+                break
 
         self.model_lr_scheduler.step()
         self.model_lr_scheduler_0.step()

@@ -22,7 +22,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from datasets.c3vdv2_dataset import C3VDv2Dataset
+from colon_datasets.c3vdv2_dataset import C3VDv2Dataset
 from .c3vdv2_losses import (
     scale_invariant_log_loss,
     pose_loss,
@@ -64,6 +64,9 @@ class _C3VDv2DataMixin(BaseTrainer):
         return super().compute_losses(inputs, outputs)      # type: ignore[abstract]
 
     def build_dataloaders(self):
+        if self.opt.data_source == "hf":
+            return self._build_hf_c3vdv2_dataloaders()
+
         undistort_maps = getattr(self.opt, "undistort_maps", "undistort_maps/")
 
         train_dataset = C3VDv2Dataset(
@@ -95,6 +98,64 @@ class _C3VDv2DataMixin(BaseTrainer):
             len(train_dataset) // self.opt.batch_size * self.opt.num_epochs
         )
         print(f"  Train: {len(train_dataset):,}  Val: {len(val_dataset):,}")
+
+    def _build_hf_c3vdv2_dataloaders(self):
+        if not self.opt.hf_repo_id:
+            raise ValueError("--hf_repo_id is required when --data_source hf")
+
+        from colon_datasets.hf_triplet_dataset import build_hf_triplet_dataset
+
+        train_dataset = build_hf_triplet_dataset(
+            repo_id=self.opt.hf_repo_id,
+            split="train",
+            streaming=self.opt.hf_streaming,
+            cache_dir=self.opt.hf_cache_dir,
+            target_size=(self.opt.height, self.opt.width),
+            is_train=True,
+            output_format="c3vdv2",
+            scales=self.opt.scales,
+            shuffle_buffer=self.opt.hf_shuffle_buffer,
+        )
+        val_dataset = build_hf_triplet_dataset(
+            repo_id=self.opt.hf_repo_id,
+            split="val",
+            streaming=self.opt.hf_streaming,
+            cache_dir=self.opt.hf_cache_dir,
+            target_size=(self.opt.height, self.opt.width),
+            is_train=False,
+            output_format="c3vdv2",
+            scales=self.opt.scales,
+            shuffle_buffer=0,
+        )
+
+        train_workers = 0 if self.opt.hf_streaming else self.opt.num_workers
+        val_workers = 0 if self.opt.hf_streaming else 1
+        self.train_loader = DataLoader(
+            train_dataset,
+            self.opt.batch_size,
+            shuffle=not self.opt.hf_streaming,
+            num_workers=train_workers,
+            pin_memory=True,
+            drop_last=True,
+        )
+        self.val_loader = DataLoader(
+            val_dataset,
+            self.opt.batch_size,
+            shuffle=False,
+            num_workers=val_workers,
+            pin_memory=True,
+            drop_last=True,
+        )
+        self.val_iter = iter(self.val_loader)
+        self.num_total_steps = self._num_total_steps(train_dataset)
+        print(f"Using HF C3VDv2 dataset: {self.opt.hf_repo_id}")
+        print(
+            "  mode={} train={} val={}".format(
+                "streaming" if self.opt.hf_streaming else "cached",
+                self._dataset_len(train_dataset),
+                self._dataset_len(val_dataset),
+            )
+        )
 
     def process_batch(self, inputs: dict) -> tuple:  # type: ignore[override]
         # super() resolves to the concrete trainer (StageOneTrainer / StageTwoTrainer)

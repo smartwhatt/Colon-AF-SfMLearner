@@ -196,7 +196,7 @@ def main():
     print(f"Saved maps to {args.output_dir}")
     print(f"Virtual camera K:\n{K_out}")
     print(
-        "\nNow update UNDISTORT_FX/FY/CX/CY in datasets/c3vdv2_dataset.py with K_out values."
+        "\nNow update UNDISTORT_FX/FY/CX/CY in colon_datasets/c3vdv2_dataset.py with K_out values."
     )
 
 

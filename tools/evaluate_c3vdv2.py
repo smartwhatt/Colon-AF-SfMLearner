@@ -29,7 +29,7 @@ import cv2
 from torch.utils.data import DataLoader
 
 from networks import ResnetEncoder, DepthDecoder
-from datasets.c3vdv2_dataset import C3VDv2Dataset
+from colon_datasets.c3vdv2_dataset import C3VDv2Dataset
 
 
 MIN_DEPTH = 0.001

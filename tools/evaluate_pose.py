@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 from layers import transformation_from_parameters
 from utils import readlines
 from options import MonodepthOptions
-from datasets import SCAREDRAWDataset
+from colon_datasets import SCAREDRAWDataset
 
 
 # from https://github.com/tinghuiz/SfMLearner

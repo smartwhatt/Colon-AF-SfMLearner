@@ -21,6 +21,12 @@ LOG_DIR="${LOG_DIR:-logs/real_colon}"
 SPLIT="${SPLIT:-real_colon}"
 GPU="${GPU:-0}"
 MODEL_NAME="${MODEL_NAME:-stage2_adapt}"
+DATA_SOURCE="${DATA_SOURCE:-local}"
+HF_REPO_ID="${HF_REPO_ID:-}"
+HF_STREAMING="${HF_STREAMING:-0}"
+HF_CACHE_DIR="${HF_CACHE_DIR:-}"
+HF_SHUFFLE_BUFFER="${HF_SHUFFLE_BUFFER:-10000}"
+STEPS_PER_EPOCH="${STEPS_PER_EPOCH:-}"
 
 # Required: source for frozen position_encoder + position.
 LOAD_WEIGHTS_FOLDER="${LOAD_WEIGHTS_FOLDER:-}"
@@ -44,25 +50,47 @@ SPECULAR_THRESHOLD="${SPECULAR_THRESHOLD:-0.98}"
 
 log() { echo -e "\n\033[1;36m>>> $*\033[0m\n"; }
 
+HF_ARGS=(--data_source "$DATA_SOURCE")
+if [ "$DATA_SOURCE" = "hf" ]; then
+    HF_ARGS+=(--hf_repo_id "$HF_REPO_ID")
+    HF_ARGS+=(--hf_shuffle_buffer "$HF_SHUFFLE_BUFFER")
+    if [ "$HF_STREAMING" = "1" ]; then
+        HF_ARGS+=(--hf_streaming)
+    fi
+    if [ -n "$HF_CACHE_DIR" ]; then
+        HF_ARGS+=(--hf_cache_dir "$HF_CACHE_DIR")
+    fi
+    if [ -n "$STEPS_PER_EPOCH" ]; then
+        HF_ARGS+=(--steps_per_epoch "$STEPS_PER_EPOCH")
+    fi
+fi
+
 check_data() {
-    if [ ! -d "$DATA_PATH" ]; then
-        echo "ERROR: DATA_PATH does not exist: $DATA_PATH"
-        echo "Set DATA_PATH=/path/to/REAL-Colon before running."
-        exit 1
-    fi
-    if [ ! -f "$DATA_PATH/video_info.csv" ]; then
-        echo "ERROR: video_info.csv not found under DATA_PATH: $DATA_PATH"
-        exit 1
-    fi
-    if [ ! -f "splits/${SPLIT}/train_files.txt" ]; then
-        echo "ERROR: Split file not found: splits/${SPLIT}/train_files.txt"
-        echo "Run: uv run python scripts/generate_splits_realcolon.py --data_root \"$DATA_PATH\" --output_dir \"splits/${SPLIT}\""
-        exit 1
-    fi
-    if [ ! -f "splits/${SPLIT}/val_files.txt" ]; then
-        echo "ERROR: Split file not found: splits/${SPLIT}/val_files.txt"
-        echo "Run: uv run python scripts/generate_splits_realcolon.py --data_root \"$DATA_PATH\" --output_dir \"splits/${SPLIT}\""
-        exit 1
+    if [ "$DATA_SOURCE" = "hf" ]; then
+        if [ -z "$HF_REPO_ID" ]; then
+            echo "ERROR: HF_REPO_ID is required when DATA_SOURCE=hf"
+            exit 1
+        fi
+    else
+        if [ ! -d "$DATA_PATH" ]; then
+            echo "ERROR: DATA_PATH does not exist: $DATA_PATH"
+            echo "Set DATA_PATH=/path/to/REAL-Colon before running."
+            exit 1
+        fi
+        if [ ! -f "$DATA_PATH/video_info.csv" ]; then
+            echo "ERROR: video_info.csv not found under DATA_PATH: $DATA_PATH"
+            exit 1
+        fi
+        if [ ! -f "splits/${SPLIT}/train_files.txt" ]; then
+            echo "ERROR: Split file not found: splits/${SPLIT}/train_files.txt"
+            echo "Run: uv run python scripts/generate_splits_realcolon.py --data_root \"$DATA_PATH\" --output_dir \"splits/${SPLIT}\""
+            exit 1
+        fi
+        if [ ! -f "splits/${SPLIT}/val_files.txt" ]; then
+            echo "ERROR: Split file not found: splits/${SPLIT}/val_files.txt"
+            echo "Run: uv run python scripts/generate_splits_realcolon.py --data_root \"$DATA_PATH\" --output_dir \"splits/${SPLIT}\""
+            exit 1
+        fi
     fi
     if [ -z "$LOAD_WEIGHTS_FOLDER" ]; then
         echo "ERROR: LOAD_WEIGHTS_FOLDER is required for the frozen registration net."
@@ -76,7 +104,9 @@ check_data() {
 
 run_stage2_adaptation() {
     log "REAL-Colon self-supervised Stage 2 adaptation"
+    echo "  Source:     $DATA_SOURCE"
     echo "  Data:       $DATA_PATH"
+    echo "  HF repo:    ${HF_REPO_ID:-none}"
     echo "  Split:      $SPLIT"
     echo "  Output:     ${LOG_DIR}/${MODEL_NAME}"
     echo "  Frozen:     position_encoder + position from $LOAD_WEIGHTS_FOLDER"
@@ -101,6 +131,7 @@ run_stage2_adaptation() {
         --width "$WIDTH"
         --scales 0 1 2 3
         --save_frequency "$SAVE_FREQUENCY"
+        "${HF_ARGS[@]}"
     )
 
     if [ -n "$LOAD_TRAINABLE_WEIGHTS_FOLDER" ]; then

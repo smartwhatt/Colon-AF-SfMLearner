@@ -34,6 +34,12 @@ UNDISTORT_MAPS="${UNDISTORT_MAPS:-undistort_maps/}"
 LOG_DIR="${LOG_DIR:-logs/c3vdv2}"
 SPLIT="${SPLIT:-c3vdv2}"
 GPU="${GPU:-0}"
+DATA_SOURCE="${DATA_SOURCE:-local}"
+HF_REPO_ID="${HF_REPO_ID:-}"
+HF_STREAMING="${HF_STREAMING:-0}"
+HF_CACHE_DIR="${HF_CACHE_DIR:-}"
+HF_SHUFFLE_BUFFER="${HF_SHUFFLE_BUFFER:-10000}"
+STEPS_PER_EPOCH="${STEPS_PER_EPOCH:-}"
 
 # Optional: path to SCARED pretrained weights to warm-start Stage 1.
 # Set to "" to train Stage 1 from scratch.
@@ -89,7 +95,30 @@ S1_FINAL_WEIGHTS="${S1_FINAL_WEIGHTS:-${LOG_DIR}/${S1_LOG_NAME}/models/weights_$
 
 log() { echo -e "\n\033[1;36m>>> $*\033[0m\n"; }
 
+HF_ARGS=(--data_source "$DATA_SOURCE")
+if [ "$DATA_SOURCE" = "hf" ]; then
+    HF_ARGS+=(--hf_repo_id "$HF_REPO_ID")
+    HF_ARGS+=(--hf_shuffle_buffer "$HF_SHUFFLE_BUFFER")
+    if [ "$HF_STREAMING" = "1" ]; then
+        HF_ARGS+=(--hf_streaming)
+    fi
+    if [ -n "$HF_CACHE_DIR" ]; then
+        HF_ARGS+=(--hf_cache_dir "$HF_CACHE_DIR")
+    fi
+    if [ -n "$STEPS_PER_EPOCH" ]; then
+        HF_ARGS+=(--steps_per_epoch "$STEPS_PER_EPOCH")
+    fi
+fi
+
 check_data() {
+    if [ "$DATA_SOURCE" = "hf" ]; then
+        if [ -z "$HF_REPO_ID" ]; then
+            echo "ERROR: HF_REPO_ID is required when DATA_SOURCE=hf"
+            exit 1
+        fi
+        return
+    fi
+
     if [ ! -d "$DATA_PATH" ]; then
         echo "ERROR: DATA_PATH does not exist: $DATA_PATH"
         echo "Set DATA_PATH=/path/to/C3VDv2 before running."
@@ -141,6 +170,7 @@ run_stage1() {
         --width               320 \
         --scales              0 1 2 3 \
         --save_frequency      5 \
+        "${HF_ARGS[@]}" \
         $LOAD_WEIGHTS_ARG
 
     log "Stage 1 complete. Final weights: $S1_FINAL_WEIGHTS"
@@ -199,6 +229,7 @@ run_stage2() {
         --w_pose_start        "$W_POSE_START" \
         --w_pose_end          "$W_POSE_END" \
         --ramp_epochs         "$RAMP_EPOCHS" \
+        "${HF_ARGS[@]}" \
         $SPECULAR_ARGS
 
     log "Stage 2 complete."
@@ -211,7 +242,9 @@ run_stage2() {
 
 log "AF-SfMLearner × C3VDv2 Fine-Tuning Pipeline"
 echo "  GPU:          $GPU"
+echo "  Data source:  $DATA_SOURCE"
 echo "  Data:         $DATA_PATH"
+echo "  HF repo:      ${HF_REPO_ID:-none}"
 echo "  Logs:         $LOG_DIR"
 echo "  Split:        $SPLIT"
 echo "  SpecularNet:  $USE_SPECULAR_NET"

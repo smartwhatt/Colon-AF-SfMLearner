@@ -44,6 +44,7 @@ EvalSplitType   = Literal["eigen", "eigen_benchmark", "benchmark",
                            "odom_9", "odom_10", "endovis"]
 TrainModeType   = Literal["stage1", "stage2", "end_to_end",
                            "c3vdv2_stage1", "c3vdv2_stage2"]
+DataSourceType  = Literal["local", "hf"]
 
 
 # ── Config model ──────────────────────────────────────────────────────────────
@@ -87,6 +88,32 @@ class TrainingConfig(BaseModel):
     max_depth: float = Field(default=150.0, description="maximum depth")
     use_stereo: bool = Field(default=False, description="use stereo pair for training")
     frame_ids: List[int] = Field(default=[0, -1, 1], description="frame IDs to load")
+
+    # ── Data source ───────────────────────────────────────────────────────────
+    data_source: DataSourceType = Field(
+        default="local",
+        description="data backend to use (local | hf)",
+    )
+    hf_repo_id: Optional[str] = Field(
+        default=None,
+        description="Hugging Face dataset repo id when data_source=hf",
+    )
+    hf_streaming: bool = Field(
+        default=False,
+        description="stream Hugging Face dataset instead of using the local HF cache",
+    )
+    hf_cache_dir: Optional[str] = Field(
+        default=None,
+        description="optional Hugging Face dataset cache directory",
+    )
+    hf_shuffle_buffer: int = Field(
+        default=10000,
+        description="shuffle buffer size for HF streaming datasets",
+    )
+    steps_per_epoch: Optional[int] = Field(
+        default=None,
+        description="optional batch cap per epoch, useful for streaming datasets",
+    )
 
     # ── Optimisation ──────────────────────────────────────────────────────────
     batch_size: int = Field(default=12, description="batch size")
