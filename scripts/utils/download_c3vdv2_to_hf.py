@@ -373,7 +373,14 @@ PARQUET_SCHEMA = pa.schema([
 
 def write_parquet(rows, path):
     cols = {k: [r[k] for r in rows] for k in PARQUET_SCHEMA.names}
-    pq.write_table(pa.table(cols, schema=PARQUET_SCHEMA), path, compression="snappy")
+    pq.write_table(
+        pa.table(cols, schema=PARQUET_SCHEMA),
+        path,
+        compression="snappy",
+        row_group_size=50,       # small row groups → HF viewer can random-access without loading the whole file
+        write_statistics=True,
+        data_page_size=1024**2,  # 1 MB pages
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -485,8 +492,8 @@ def main():
                         help="HF token (default: ~/.cache/huggingface/token or HF_TOKEN env)")
     parser.add_argument("--tmp-dir", default="/tmp/c3vdv2_hf",
                         help="Temp dir for downloads/extraction (default: /tmp/c3vdv2_hf)")
-    parser.add_argument("--shard-size", type=int, default=500,
-                        help="Rows per Parquet shard (default: 500)")
+    parser.add_argument("--shard-size", type=int, default=100,
+                        help="Rows per Parquet shard (default: 100)")
     parser.add_argument("--indices", nargs="*", type=int, default=None,
                         help="File indices to process (skip interactive menu)")
     parser.add_argument("--splits-dir", default=None,
