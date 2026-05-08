@@ -13,7 +13,6 @@ Resume: already-uploaded shards are skipped (checked against HF file list at sta
 import os
 import re
 import sys
-import json
 import shutil
 import zipfile
 import tempfile
@@ -68,6 +67,32 @@ tags:
 - depth
 - pose
 - medical
+dataset_info:
+  features:
+  - name: sequence
+    dtype: string
+  - name: frame_idx
+    dtype: int32
+  - name: rgb_prev
+    dtype: image
+  - name: rgb_curr
+    dtype: image
+  - name: rgb_next
+    dtype: image
+  - name: depth
+    dtype: binary
+  - name: occlusion
+    dtype: binary
+  - name: pose_curr2prev
+    sequence: float64
+  - name: pose_curr2next
+    sequence: float64
+  - name: K
+    sequence: float32
+  splits:
+  - name: train
+  - name: val
+  - name: test
 ---
 
 # C3VDv2 — Colonoscopy 3D Video Dataset v2
@@ -107,9 +132,9 @@ perspective crops (512×512) using the Scaramuzza camera model from
 |--------|-------|-------------|
 | `sequence` | string | sequence name, e.g. `c1_ascending_t1_v1` |
 | `frame_idx` | int32 | centre frame index |
-| `rgb_prev` | binary | PNG bytes, undistorted 512×512 |
-| `rgb_curr` | binary | PNG bytes, undistorted 512×512 |
-| `rgb_next` | binary | PNG bytes, undistorted 512×512 |
+| `rgb_prev` | image | undistorted 512×512 PNG (HF Image feature) |
+| `rgb_curr` | image | undistorted 512×512 PNG (HF Image feature) |
+| `rgb_next` | image | undistorted 512×512 PNG (HF Image feature) |
 | `depth` | binary | float32 `.tobytes()`, 512×512, metric metres |
 | `occlusion` | binary | uint8 `.tobytes()`, 512×512 binary mask (1 = occluded) |
 | `pose_curr2prev` | list[float64] | 16-value row-major 4×4 relative pose |
@@ -135,7 +160,7 @@ import io
 ds = load_dataset("{repo_id}", split="train", streaming=True)
 
 for row in ds:
-    rgb = np.array(Image.open(io.BytesIO(row["rgb_curr"])))            # 512×512×3 uint8
+    rgb = np.array(row["rgb_curr"])                                     # 512×512×3 uint8 PIL Image
     depth = np.frombuffer(row["depth"], np.float32).reshape(512, 512)  # metres
     occ = np.frombuffer(row["occlusion"], np.uint8).reshape(512, 512)  # binary mask
     T_curr2prev = np.array(row["pose_curr2prev"]).reshape(4, 4)
@@ -271,10 +296,11 @@ def sorted_frame_indices(seq_dir):
 # ---------------------------------------------------------------------------
 
 def _encode_png(bgr):
+    """Encode BGR uint8 array as HF Image struct {bytes: PNG, path: None}."""
     ok, buf = cv2.imencode(".png", bgr)
     if not ok:
         raise RuntimeError("PNG encoding failed")
-    return bytes(buf)
+    return {"bytes": bytes(buf), "path": None}
 
 
 def _load_rgb(seq_dir, idx, map1, map2):
@@ -315,12 +341,15 @@ _K_NORM = np.array(
     dtype=np.float32,
 ).flatten().tolist()
 
+# HF Image feature is stored as a struct {bytes: binary, path: string}
+_HF_IMAGE_TYPE = pa.struct([pa.field("bytes", pa.binary()), pa.field("path", pa.string())])
+
 PARQUET_SCHEMA = pa.schema([
     pa.field("sequence",       pa.string()),
     pa.field("frame_idx",      pa.int32()),
-    pa.field("rgb_prev",       pa.binary()),
-    pa.field("rgb_curr",       pa.binary()),
-    pa.field("rgb_next",       pa.binary()),
+    pa.field("rgb_prev",       _HF_IMAGE_TYPE),
+    pa.field("rgb_curr",       _HF_IMAGE_TYPE),
+    pa.field("rgb_next",       _HF_IMAGE_TYPE),
     pa.field("depth",          pa.binary()),
     pa.field("occlusion",      pa.binary()),
     pa.field("pose_curr2prev", pa.list_(pa.float64())),
@@ -408,7 +437,7 @@ def process_sequence(seq_dir, seq_name, split, map1, map2,
         if not rows:
             continue
 
-        local_shard = os.path.join(tmp_dir, f"_shard_{shard_n:04d}.parquet")
+        local_shard = os.path.join(tmp_dir, f"_{seq_name}_shard_{shard_n:04d}.parquet")
         write_parquet(rows, local_shard)
         try:
             api.upload_file(
@@ -418,6 +447,9 @@ def process_sequence(seq_dir, seq_name, split, map1, map2,
                 repo_type="dataset",
                 commit_message=f"Add {seq_name} shard {shard_n:04d}",
             )
+        except Exception as e:
+            tqdm.write(f"      ERROR uploading shard {shard_n:04d}: {e}")
+            return False
         finally:
             if os.path.exists(local_shard):
                 os.remove(local_shard)
@@ -500,16 +532,15 @@ def main():
         existing_hf = set()
     print(f"  {len(existing_hf)} files already present")
 
-    if "README.md" not in existing_hf:
-        readme = README_TEMPLATE.format(repo_id=args.repo_id)
-        api.upload_file(
-            path_or_fileobj=readme.encode(),
-            path_in_repo="README.md",
-            repo_id=args.repo_id,
-            repo_type="dataset",
-            commit_message="Add README with CC BY 4.0 attribution",
-        )
-        print("  Uploaded README.md")
+    readme = README_TEMPLATE.format(repo_id=args.repo_id)
+    api.upload_file(
+        path_or_fileobj=readme.encode(),
+        path_in_repo="README.md",
+        repo_id=args.repo_id,
+        repo_type="dataset",
+        commit_message="Update README with dataset_info features",
+    )
+    print("  Uploaded README.md")
 
     # ---- Undistortion maps ------------------------------------------------
     print(f"\nLoading undistortion maps from {args.undistort_maps}...")
@@ -517,77 +548,71 @@ def main():
     print(f"  Maps loaded (output: {UNDISTORT_WIDTH}×{UNDISTORT_HEIGHT})")
 
     # ---- Temp dir ---------------------------------------------------------
-    own_tmp = args.tmp_dir is None
-    tmp_base = tempfile.mkdtemp(prefix="c3vdv2_hf_") if own_tmp else args.tmp_dir
+    tmp_base = args.tmp_dir or tempfile.mkdtemp(prefix="c3vdv2_hf_")
     os.makedirs(tmp_base, exist_ok=True)
     print(f"Temp dir: {tmp_base}\n")
 
     total = len(selected)
     failed = []
 
-    try:
-        for n, i in enumerate(selected, 1):
-            f = files[i]
-            file_id = f["dataFile"]["id"]
-            filename = f["label"]
-            expected_size = f["dataFile"]["filesize"]
+    for n, i in enumerate(selected, 1):
+        f = files[i]
+        file_id = f["dataFile"]["id"]
+        filename = f["label"]
+        expected_size = f["dataFile"]["filesize"]
 
-            print(f"\n[{n}/{total}] {filename} ({fmt_size(expected_size)})")
+        print(f"\n[{n}/{total}] {filename} ({fmt_size(expected_size)})")
 
-            zip_path = download_zip(file_id, filename, expected_size, tmp_base)
-            if zip_path is None:
+        zip_path = download_zip(file_id, filename, expected_size, tmp_base)
+        if zip_path is None:
+            failed.append(filename)
+            continue
+
+        extract_dir = os.path.join(tmp_base, filename.replace(".zip", "_extracted"))
+        if not os.path.isdir(extract_dir):
+            print("  Extracting...")
+            try:
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    zf.extractall(extract_dir)
+            except Exception as e:
+                print(f"  ERROR extracting: {e}")
                 failed.append(filename)
                 continue
+        else:
+            print("  Already extracted.")
 
-            extract_dir = os.path.join(tmp_base, filename.replace(".zip", "_extracted"))
-            if not os.path.isdir(extract_dir):
-                print("  Extracting...")
-                try:
-                    with zipfile.ZipFile(zip_path, "r") as zf:
-                        zf.extractall(extract_dir)
-                except Exception as e:
-                    print(f"  ERROR extracting: {e}")
-                    failed.append(filename)
-                    continue
+        seqs = discover_sequences(extract_dir)
+        if not seqs:
+            print(f"  WARNING: no sequences found in {filename}")
+
+        zip_ok = True
+        for seq_dir in seqs:
+            # If the zip had no top-level folder, seq_dir == extract_dir and
+            # basename would be "name_extracted". Use the zip stem instead.
+            if os.path.abspath(seq_dir) == os.path.abspath(extract_dir):
+                seq_name = filename.replace(".zip", "")
             else:
-                print("  Already extracted.")
+                seq_name = os.path.basename(seq_dir)
+            split = assign_split(
+                seq_name, split_map,
+                args.train_trials, args.val_trials, args.test_trials,
+            )
+            if split is None:
+                print(f"  WARNING: {seq_name} has no split assignment — skipping")
+                continue
 
-            seqs = discover_sequences(extract_dir)
-            if not seqs:
-                print(f"  WARNING: no sequences found in {filename}")
+            ok = process_sequence(
+                seq_dir, seq_name, split, map1, map2,
+                args.shard_size, args.repo_id, api, existing_hf, tmp_base,
+            )
+            if not ok:
+                zip_ok = False
 
-            zip_ok = True
-            for seq_dir in seqs:
-                # If the zip had no top-level folder, seq_dir == extract_dir and
-                # basename would be "name_extracted". Use the zip stem instead.
-                if os.path.abspath(seq_dir) == os.path.abspath(extract_dir):
-                    seq_name = filename.replace(".zip", "")
-                else:
-                    seq_name = os.path.basename(seq_dir)
-                split = assign_split(
-                    seq_name, split_map,
-                    args.train_trials, args.val_trials, args.test_trials,
-                )
-                if split is None:
-                    print(f"  WARNING: {seq_name} has no split assignment — skipping")
-                    continue
-
-                ok = process_sequence(
-                    seq_dir, seq_name, split, map1, map2,
-                    args.shard_size, args.repo_id, api, existing_hf, tmp_base,
-                )
-                if not ok:
-                    zip_ok = False
-
-            if zip_ok:
-                shutil.rmtree(extract_dir, ignore_errors=True)
-                os.remove(zip_path)
-            else:
-                failed.append(filename)
-
-    finally:
-        if own_tmp and os.path.isdir(tmp_base):
-            shutil.rmtree(tmp_base, ignore_errors=True)
+        if zip_ok:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            os.remove(zip_path)
+        else:
+            failed.append(filename)
 
     print("\n" + "=" * 100)
     print(f"Done. {total - len(failed)}/{total} zips processed successfully.")
