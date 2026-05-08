@@ -29,18 +29,25 @@ CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB — larger chunks reduce syscall overhead
 # SSH ControlMaster multiplexing (Unix only — not supported by Windows OpenSSH)
 _IS_WINDOWS = sys.platform == "win32"
 _KEEPALIVE_OPTS = [
-    "-o", "ServerAliveInterval=15",   # send keepalive every 15s so idle pipe doesn't drop
-    "-o", "ServerAliveCountMax=4",
-    "-o", "Compression=no",           # zip files don't compress further; saves CPU
-    "-o", "StrictHostKeyChecking=no",
+    "-o",
+    "ServerAliveInterval=15",  # send keepalive every 15s so idle pipe doesn't drop
+    "-o",
+    "ServerAliveCountMax=4",
+    "-o",
+    "Compression=no",  # zip files don't compress further; saves CPU
+    "-o",
+    "StrictHostKeyChecking=no",
 ]
 
 if not _IS_WINDOWS:
-    _SSH_CTRL = os.path.join(tempfile.gettempdir(), "lanta_dl_%C")
+    _SSH_CTRL = os.path.join(os.path.expanduser("~/.ssh"), "lanta_dl_%C")
     SSH_OPTS = [
-        "-o", "ControlMaster=auto",
-        "-o", f"ControlPath={_SSH_CTRL}",
-        "-o", "ControlPersist=300",
+        "-o",
+        "ControlMaster=auto",
+        "-o",
+        f"ControlPath={_SSH_CTRL}",
+        "-o",
+        "ControlPersist=300",
         *_KEEPALIVE_OPTS,
     ]
 else:
@@ -79,7 +86,9 @@ def launch_browser(playwright, headless, debug=False):
                 raise
     context = browser.new_context(user_agent=HEADERS["User-Agent"])
     page = context.new_page()
-    page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    page.add_init_script(
+        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+    )
     return browser, page
 
 
@@ -142,7 +151,9 @@ class CookieManager:
             if self._cookies == stale_cookies:
                 tqdm.write("  [session expired] refreshing Cloudflare cookies...")
                 url = f"{BASE_URL}/api/datasets/:persistentId?persistentId=doi:{DOI}"
-                browser, page = launch_browser(self._playwright, self._headless, debug=self._debug)
+                browser, page = launch_browser(
+                    self._playwright, self._headless, debug=self._debug
+                )
                 page.goto(url, wait_until="networkidle", timeout=30000)
                 self._cookies = get_browser_cookies(page)
                 browser.close()
@@ -170,14 +181,20 @@ def batch_check_remote(ssh_alias, remote_dir, files, check_extract=True):
         # Print "filename|size|extracted" — all in one shell session
         parts.append(
             f"sz=$(stat -c%s '{rp}' 2>/dev/null || echo -1); "
-            + (f"ex=$([ -d '{ed}' ] && echo 1 || echo 0); " if check_extract else "ex=0; ")
+            + (
+                f"ex=$([ -d '{ed}' ] && echo 1 || echo 0); "
+                if check_extract
+                else "ex=0; "
+            )
             + f"echo '{fn}|'$sz'|'$ex"
         )
     script = "\n".join(parts) + "\n"
     # Pipe script via stdin to avoid Windows 8191-char command-line limit
     result = subprocess.run(
         ["ssh"] + SSH_OPTS + ["-T", ssh_alias],
-        input=script, capture_output=True, text=True,
+        input=script,
+        capture_output=True,
+        text=True,
     )
     info = {}
     for line in result.stdout.splitlines():
@@ -197,9 +214,38 @@ def batch_check_remote(ssh_alias, remote_dir, files, check_extract=True):
     return info
 
 
-def transfer_file(file_id, filename, expected_size, ssh_alias, remote_dir,
-                  cookie_mgr, remote_size=-1, tqdm_pos=0, debug=False):
-    """Stream JHU → SSH pipe → LANTA. Refreshes cookies on 403. Zero local disk."""
+RECONNECT_EVERY = 128 * 1024 * 1024  # reconnect every 512 MB to reset burst window
+
+
+def _get_remote_size(ssh_alias, remote_path):
+    result = subprocess.run(
+        ["ssh"]
+        + SSH_OPTS
+        + [ssh_alias, f"stat -c%s '{remote_path}' 2>/dev/null || echo -1"],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return -1
+
+
+def transfer_file(
+    file_id,
+    filename,
+    expected_size,
+    ssh_alias,
+    remote_dir,
+    cookie_mgr,
+    remote_size=-1,
+    tqdm_pos=0,
+    debug=False,
+):
+    """Stream JHU → SSH pipe → LANTA. Refreshes cookies on 403. Zero local disk.
+
+    Reconnects every RECONNECT_EVERY bytes to reset Cloudflare's burst throttle window.
+    """
     remote_path = f"{remote_dir}/{filename}"
     url = f"{BASE_URL}/api/access/datafile/{file_id}"
 
@@ -208,57 +254,90 @@ def transfer_file(file_id, filename, expected_size, ssh_alias, remote_dir,
         return True
 
     if 0 < remote_size < expected_size:
-        tqdm.write(f"  [{filename}] Resuming from {remote_size / 1024**2:.1f} MB / {expected_size / 1024**2:.1f} MB")
+        tqdm.write(
+            f"  [{filename}] Resuming from {remote_size / 1024**2:.1f} MB / {expected_size / 1024**2:.1f} MB"
+        )
 
     cookies = cookie_mgr.get()
     start_byte = max(remote_size, 0)
 
-    for attempt in range(3):
-        hdrs = {**HEADERS}
-        if start_byte > 0:
-            hdrs["Range"] = f"bytes={start_byte}-"
+    with tqdm(
+        total=expected_size,
+        initial=start_byte,
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        desc=filename[:40],
+        ncols=100,
+        position=tqdm_pos,
+        leave=True,
+    ) as pbar:
+        while start_byte < expected_size:
+            segment_end = min(start_byte + RECONNECT_EVERY, expected_size) - 1
+            hdrs = {**HEADERS, "Range": f"bytes={start_byte}-{segment_end}"}
 
-        r = requests.get(url, headers=hdrs, cookies=cookies, stream=True, timeout=3600, impersonate="chrome")
+            r = None
+            for attempt in range(3):
+                r = requests.get(
+                    url,
+                    headers=hdrs,
+                    cookies=cookies,
+                    stream=True,
+                    timeout=3600,
+                    impersonate="chrome131",
+                )
+                if r.status_code == 403:
+                    if debug:
+                        tqdm.write(f"  [debug] 403 headers: {dict(r.headers)}")
+                    cookies = cookie_mgr.refresh(cookies)
+                    r = None
+                    continue
+                break
 
-        if r.status_code == 403:
-            if debug:
-                tqdm.write(f"  [debug] 403 headers: {dict(r.headers)}")
-            cookies = cookie_mgr.refresh(cookies)
-            continue
+            if r is None:
+                tqdm.write(
+                    f"  ERROR: failed after 3 attempts (persistent 403) for {filename}"
+                )
+                return False
 
-        if r.status_code not in (200, 206):
-            tqdm.write(f"  ERROR: HTTP {r.status_code} for {filename}")
-            return False
+            if r.status_code not in (200, 206):
+                tqdm.write(f"  ERROR: HTTP {r.status_code} for {filename}")
+                return False
 
-        resuming = r.status_code == 206
-        start = start_byte if resuming else 0
-        ssh_write = f"cat >> '{remote_path}'" if resuming else f"cat > '{remote_path}'"
-        ssh_proc = ssh_popen(ssh_alias, ssh_write, stdin=subprocess.PIPE)
+            ssh_write = (
+                f"cat >> '{remote_path}'"
+                if start_byte > 0
+                else f"cat > '{remote_path}'"
+            )
+            ssh_proc = ssh_popen(ssh_alias, ssh_write, stdin=subprocess.PIPE)
 
-        with tqdm(
-            total=expected_size,
-            initial=start,
-            unit="B", unit_scale=True, unit_divisor=1024,
-            desc=filename[:40],
-            ncols=100,
-            position=tqdm_pos,
-            leave=True,
-        ) as pbar:
+            bytes_this_segment = 0
             for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
                 ssh_proc.stdin.write(chunk)
                 pbar.update(len(chunk))
+                bytes_this_segment += len(chunk)
 
-        ssh_proc.stdin.close()
-        ssh_proc.wait()
+            ssh_proc.stdin.close()
+            ssh_proc.wait()
 
-        if ssh_proc.returncode != 0:
-            tqdm.write(f"  ERROR: SSH pipe failed for {filename}")
-            return False
+            if ssh_proc.returncode != 0:
+                tqdm.write(f"  ERROR: SSH pipe failed for {filename}")
+                return False
 
-        return True
+            start_byte += bytes_this_segment
 
-    tqdm.write(f"  ERROR: failed after 3 attempts (persistent 403) for {filename}")
-    return False
+            # Verify remote size before next segment to avoid double-writing on partial chunks
+            if start_byte < expected_size:
+                start_byte = _get_remote_size(ssh_alias, remote_path)
+                if start_byte < 0:
+                    tqdm.write(f"  ERROR: could not stat remote file after segment")
+                    return False
+                if debug:
+                    tqdm.write(
+                        f"  [debug] reconnecting at {start_byte / 1024**2:.1f} MB"
+                    )
+
+    return True
 
 
 def unzip_on_lanta(filename, ssh_alias, remote_dir, delete_zip):
@@ -270,9 +349,13 @@ def unzip_on_lanta(filename, ssh_alias, remote_dir, delete_zip):
         cmd += f" && rm '{remote_path}'"
     result = ssh_run(ssh_alias, cmd, capture_output=True)
     if result.returncode != 0:
-        tqdm.write(f"  [{filename}] Extraction FAILED: {result.stderr.decode().strip()}")
+        tqdm.write(
+            f"  [{filename}] Extraction FAILED: {result.stderr.decode().strip()}"
+        )
     else:
-        tqdm.write(f"  [{filename}] Extracted{' and zip deleted' if delete_zip else ''}.")
+        tqdm.write(
+            f"  [{filename}] Extracted{' and zip deleted' if delete_zip else ''}."
+        )
 
 
 # -----------------------------
@@ -281,15 +364,32 @@ def unzip_on_lanta(filename, ssh_alias, remote_dir, delete_zip):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("remote_dir", help="Target directory on LANTA")
-    parser.add_argument("--ssh-alias", default="lanta", help="SSH alias from ~/.ssh/config")
-    parser.add_argument("--no-unzip", action="store_true", help="Skip unzipping on LANTA after transfer")
-    parser.add_argument("--delete-zip", action="store_true", help="Delete zip on LANTA after extracting")
-    parser.add_argument("--no-headless", dest="headless", action="store_false", default=True,
-                        help="Show browser window")
-    parser.add_argument("--debug", action="store_true",
-                        help="Print browser/cookie/HTTP debug info")
-    parser.add_argument("--parallel", type=int, default=1, metavar="N",
-                        help="Number of simultaneous file transfers (default: 1; increase only if JHU allows it)")
+    parser.add_argument(
+        "--ssh-alias", default="lanta", help="SSH alias from ~/.ssh/config"
+    )
+    parser.add_argument(
+        "--no-unzip", action="store_true", help="Skip unzipping on LANTA after transfer"
+    )
+    parser.add_argument(
+        "--delete-zip", action="store_true", help="Delete zip on LANTA after extracting"
+    )
+    parser.add_argument(
+        "--no-headless",
+        dest="headless",
+        action="store_false",
+        default=True,
+        help="Show browser window",
+    )
+    parser.add_argument(
+        "--debug", action="store_true", help="Print browser/cookie/HTTP debug info"
+    )
+    parser.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Number of simultaneous file transfers (default: 1; increase only if JHU allows it)",
+    )
     args = parser.parse_args()
 
     print(f"SSH alias:  {args.ssh_alias}")
@@ -306,10 +406,14 @@ def main():
         files = get_files(metadata)
         initial_cookies = get_browser_cookies(page)
         if args.debug:
-            print(f"  [debug] initial cookies: {', '.join(initial_cookies.keys()) or 'NONE'}")
+            print(
+                f"  [debug] initial cookies: {', '.join(initial_cookies.keys()) or 'NONE'}"
+            )
         browser.close()
 
-        cookie_mgr = CookieManager(initial_cookies, playwright, args.headless, debug=args.debug)
+        cookie_mgr = CookieManager(
+            initial_cookies, playwright, args.headless, debug=args.debug
+        )
 
         total_size = sum(f["dataFile"]["filesize"] for f in files)
 
@@ -347,7 +451,9 @@ def main():
 
         print(f"Checking remote state for {len(selected_files)} files (1 SSH call)...")
         remote_info = batch_check_remote(
-            args.ssh_alias, args.remote_dir, selected_files,
+            args.ssh_alias,
+            args.remote_dir,
+            selected_files,
             check_extract=not args.no_unzip,
         )
 
@@ -368,7 +474,12 @@ def main():
 
         # Position 0 = overall bar; per-file bars start at position 1
         overall_bar = tqdm(
-            total=total, unit="file", desc="Overall", ncols=100, position=0, leave=True,
+            total=total,
+            unit="file",
+            desc="Overall",
+            ncols=100,
+            position=0,
+            leave=True,
         )
 
         # Separate single-worker pool for unzip so it never blocks a download slot
@@ -391,7 +502,13 @@ def main():
                 debug=args.debug,
             )
             if ok and not args.no_unzip and filename.endswith(".zip"):
-                unzip_pool.submit(unzip_on_lanta, filename, args.ssh_alias, args.remote_dir, args.delete_zip)
+                unzip_pool.submit(
+                    unzip_on_lanta,
+                    filename,
+                    args.ssh_alias,
+                    args.remote_dir,
+                    args.delete_zip,
+                )
             overall_bar.update(1)
             return filename, ok
 
@@ -411,7 +528,9 @@ def main():
 
         try:
             with ThreadPoolExecutor(max_workers=args.parallel) as pool:
-                futures = {pool.submit(worker_with_pos, item): item for item in work_items}
+                futures = {
+                    pool.submit(worker_with_pos, item): item for item in work_items
+                }
                 for fut in as_completed(futures):
                     filename, ok = fut.result()
                     if not ok:
