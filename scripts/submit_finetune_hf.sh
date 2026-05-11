@@ -17,7 +17,7 @@ cd "$PROJECT_DIR"
 
 export DATA_SOURCE="hf"
 export HF_REPO_ID="SmartWhatt/c3vdv2-SfM"
-export HF_STREAMING="1"         # 0 = cache locally, 1 = stream from HF
+export HF_STREAMING="0"         # 0 = cache locally, 1 = stream from HF
 export HF_CACHE_DIR="/media/data01/smartwatt/hf"          # leave empty to use HF default cache (~/.cache/huggingface)
 export HF_SHUFFLE_BUFFER="10000"
 export STEPS_PER_EPOCH=""       # set e.g. "500" to cap steps when streaming
