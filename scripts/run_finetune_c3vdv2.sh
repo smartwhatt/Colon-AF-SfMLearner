@@ -64,6 +64,11 @@ W_POSE_START="${W_POSE_START:-0.5}"
 W_POSE_END="${W_POSE_END:-0.1}"
 RAMP_EPOCHS="${RAMP_EPOCHS:-8}"
 
+# Depth range — must match evaluate_c3vdv2.py (MIN_DEPTH=0.001, MAX_DEPTH=0.100)
+# Default options.py values (0.1 / 150) are KITTI-scale; C3VDv2 depth is 0-100mm in metres.
+MIN_DEPTH="${MIN_DEPTH:-0.001}"
+MAX_DEPTH="${MAX_DEPTH:-0.1}"
+
 # ── SpecularNet (Phase 1 PR 1) ────────────────────────────────────────────────
 # USE_SPECULAR_NET=0  →  Ablation A: baseline (no change to existing training)
 # USE_SPECULAR_NET=1  →  Ablation B: specular gating + BCE weak supervision
@@ -169,6 +174,8 @@ run_stage1() {
         --height              256 \
         --width               320 \
         --scales              0 1 2 3 \
+        --min_depth           "$MIN_DEPTH" \
+        --max_depth           "$MAX_DEPTH" \
         --save_frequency      5 \
         "${HF_ARGS[@]}" \
         $LOAD_WEIGHTS_ARG
@@ -223,6 +230,8 @@ run_stage2() {
         --height              256 \
         --width               320 \
         --scales              0 1 2 3 \
+        --min_depth           "$MIN_DEPTH" \
+        --max_depth           "$MAX_DEPTH" \
         --save_frequency      5 \
         --w_depth_start       "$W_DEPTH_START" \
         --w_depth_end         "$W_DEPTH_END" \
