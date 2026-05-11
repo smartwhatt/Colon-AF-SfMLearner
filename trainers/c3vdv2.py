@@ -118,7 +118,7 @@ class _C3VDv2DataMixin(BaseTrainer):
         )
         val_dataset = build_hf_triplet_dataset(
             repo_id=self.opt.hf_repo_id,
-            split="val",
+            split="validation",
             streaming=self.opt.hf_streaming,
             cache_dir=self.opt.hf_cache_dir,
             target_size=(self.opt.height, self.opt.width),
