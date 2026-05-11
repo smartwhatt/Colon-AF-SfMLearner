@@ -524,12 +524,56 @@ def process_sequence(seq_dir, seq_name, split, map1, map2,
 # Main
 # ---------------------------------------------------------------------------
 
+def fix_dataset_info(repo_id, hf_token=None):
+    """Download dataset_info.json from HF, rename any 'validation' split to 'val', re-upload."""
+    import json
+    from huggingface_hub import HfApi, hf_hub_download
+
+    api = HfApi(token=hf_token)
+
+    # Download current dataset_info.json
+    local_path = hf_hub_download(
+        repo_id=repo_id,
+        filename="dataset_info.json",
+        repo_type="dataset",
+        token=hf_token,
+    )
+    with open(local_path) as f:
+        info = json.load(f)
+
+    # Patch: rename 'validation' → 'val' in splits list
+    changed = False
+    for entry in info.get("splits", []):
+        if entry.get("name") == "validation":
+            entry["name"] = "val"
+            changed = True
+            print("  Renamed split 'validation' → 'val'")
+
+    if not changed:
+        print("  No 'validation' split found — nothing to fix.")
+        print(f"  Current splits: {[s.get('name') for s in info.get('splits', [])]}")
+        return
+
+    fixed = json.dumps(info, indent=2).encode()
+    api.upload_file(
+        path_or_fileobj=fixed,
+        path_in_repo="dataset_info.json",
+        repo_id=repo_id,
+        repo_type="dataset",
+        commit_message="Fix split name: validation → val",
+    )
+    print("  Uploaded corrected dataset_info.json")
+    print("  Delete your local HF cache before re-running training so it picks up the fix.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Download C3VDv2, convert to Parquet triplet shards, push to HuggingFace"
     )
+    parser.add_argument("--fix-splits", action="store_true",
+                        help="Fix dataset_info.json split name (validation → val) then exit")
     parser.add_argument("repo_id", help="HF dataset repo, e.g. username/c3vdv2")
-    parser.add_argument("--undistort_maps", required=True,
+    parser.add_argument("--undistort_maps", default=None,
                         help="Dir with undistort_map1.npy / undistort_map2.npy")
     parser.add_argument("--hf-token", default=None,
                         help="HF token (default: ~/.cache/huggingface/token or HF_TOKEN env)")
@@ -547,6 +591,13 @@ def main():
     args = parser.parse_args()
 
     hf_token = args.hf_token or os.environ.get("HF_TOKEN")
+
+    if args.fix_splits:
+        fix_dataset_info(args.repo_id, hf_token)
+        return
+
+    if not args.undistort_maps:
+        parser.error("--undistort_maps is required for the upload workflow")
 
     # ---- Metadata & file selection ----------------------------------------
     print("Fetching C3VDv2 metadata from JHU DataVerse...")
