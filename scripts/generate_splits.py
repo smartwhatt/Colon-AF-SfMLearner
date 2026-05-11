@@ -130,15 +130,101 @@ def sequence_stem(seq_name: str) -> str:
     return os.path.basename(seq_name)
 
 
-def sequence_trial(seq_name: str) -> str | None:
+def sequence_parts(seq_name: str) -> dict:
     match = REGIONAL_SEQUENCE_RE.match(sequence_stem(seq_name))
     if match is None:
-        return None
-    return match.group("trial")
+        return {}
+    return match.groupdict()
+
+
+def sequence_trial(seq_name: str) -> str | None:
+    return sequence_parts(seq_name).get("trial")
 
 
 def is_debris_variant(seq_name: str) -> bool:
     return sequence_stem(seq_name).endswith("_v3")
+
+
+def dev_stratification_key(seq_name: str) -> tuple:
+    parts = sequence_parts(seq_name)
+    if not parts:
+        return ("unknown", sequence_stem(seq_name))
+    return (parts["trial"], parts["colon"], parts["region"])
+
+
+def split_dev_sequences(train_seqs: list, fraction: float, seed: int) -> tuple[list, list]:
+    """Move whole trajectory groups from train into an in-domain dev split."""
+    if fraction <= 0:
+        return train_seqs, []
+    if fraction >= 1:
+        raise ValueError("--dev_fraction_from_train must be in [0, 1)")
+    if len(train_seqs) < 2:
+        return train_seqs, []
+
+    rng = random.Random(seed)
+    target = max(1, round(len(train_seqs) * fraction))
+    by_key = {}
+    for seq in train_seqs:
+        by_key.setdefault(dev_stratification_key(seq[0]), []).append(seq)
+
+    by_trial = {}
+    for key, group in by_key.items():
+        trial = key[0]
+        by_trial.setdefault(trial, []).append((key, sorted(group)))
+    for groups in by_trial.values():
+        rng.shuffle(groups)
+
+    selected = set()
+    made_progress = True
+    while len(selected) < target and made_progress:
+        made_progress = False
+        for trial in sorted(by_trial):
+            groups = by_trial[trial]
+            if not groups:
+                continue
+            _, group = groups.pop()
+            if len(train_seqs) - (len(selected) + len(group)) < 1:
+                continue
+            selected.update(seq[0] for seq in group)
+            made_progress = True
+            if len(selected) >= target:
+                break
+
+    dev_seqs = sorted([seq for seq in train_seqs if seq[0] in selected])
+    kept_train_seqs = sorted([seq for seq in train_seqs if seq[0] not in selected])
+    return kept_train_seqs, dev_seqs
+
+
+def sample_count(seqs: list, stride: int = 1) -> int:
+    return sum(len(range(1, n_frames - 1, stride)) for _, n_frames in seqs)
+
+
+def sequence_summary(seqs: list, stride: int = 1) -> dict:
+    summary = {
+        "samples": sample_count(seqs, stride=stride),
+        "sequences": len(seqs),
+        "by_trial": {},
+        "by_colon": {},
+        "by_region": {},
+        "by_variant": {},
+        "by_sequence": {},
+    }
+    for seq_name, n_frames in seqs:
+        n_samples = len(range(1, n_frames - 1, stride))
+        parts = sequence_parts(seq_name)
+        trial = parts.get("trial", "unknown")
+        colon = parts.get("colon", "unknown")
+        region = parts.get("region", "unknown")
+        variant = parts.get("variant", "unknown")
+        for field, value in (
+            ("by_trial", trial),
+            ("by_colon", colon),
+            ("by_region", region),
+            ("by_variant", variant),
+        ):
+            summary[field][value] = summary[field].get(value, 0) + n_samples
+        summary["by_sequence"][seq_name] = n_samples
+    return summary
 
 
 def write_split(seqs: list, out_path: str, stride: int = 1):
@@ -155,7 +241,15 @@ def write_split(seqs: list, out_path: str, stride: int = 1):
     print(f"  {out_path}: {len(lines)} samples from {len(seqs)} sequences")
 
 
-def write_manifest(args, protocol: str, train_seqs: list, val_seqs: list, test_seqs: list):
+def write_manifest(
+    args,
+    protocol: str,
+    train_seqs: list,
+    val_seqs: list,
+    test_seqs: list,
+    dev_seqs: list | None = None,
+):
+    dev_seqs = dev_seqs or []
     manifest_path = os.path.join(args.output_dir, "manifest.json")
     total_size_mb = sum(CURATED_DOWNLOAD_SIZE_MB.values())
     manifest = {
@@ -167,13 +261,28 @@ def write_manifest(args, protocol: str, train_seqs: list, val_seqs: list, test_s
         "val_trials": args.val_trials,
         "test_trials": args.test_trials,
         "train_stride": args.train_stride,
+        "dev_fraction_from_train": args.dev_fraction_from_train,
         "split_sequence_counts": {
             "train": len(train_seqs),
+            "dev": len(dev_seqs),
             "val": len(val_seqs),
             "test": len(test_seqs),
         },
+        "split_sample_counts": {
+            "train": sample_count(train_seqs, stride=args.train_stride),
+            "dev": sample_count(dev_seqs),
+            "val": sample_count(val_seqs),
+            "test": sample_count(test_seqs),
+        },
+        "split_summaries": {
+            "train": sequence_summary(train_seqs, stride=args.train_stride),
+            "dev": sequence_summary(dev_seqs),
+            "val": sequence_summary(val_seqs),
+            "test": sequence_summary(test_seqs),
+        },
         "sequences": {
             "train": [seq for seq, _ in train_seqs],
+            "dev": [seq for seq, _ in dev_seqs],
             "val": [seq for seq, _ in val_seqs],
             "test": [seq for seq, _ in test_seqs],
         },
@@ -263,6 +372,12 @@ def main():
         default=1,
         help="Sample every N frames for train (reduces dataset size)",
     )
+    parser.add_argument(
+        "--dev_fraction_from_train",
+        type=float,
+        default=0.0,
+        help="Hold out this fraction of train-trial sequences as in-domain dev.txt",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--print_download_indices",
@@ -278,6 +393,8 @@ def main():
 
     if not args.data_root:
         parser.error("--data_root is required unless only --print_download_indices is used")
+    if not 0.0 <= args.dev_fraction_from_train < 1.0:
+        parser.error("--dev_fraction_from_train must be in [0, 1)")
 
     random.seed(args.seed)
 
@@ -311,6 +428,10 @@ def main():
             elif trial in args.train_trials:
                 train_seqs.append((seq_name, n))
 
+    train_seqs, dev_seqs = split_dev_sequences(
+        train_seqs, args.dev_fraction_from_train, args.seed
+    )
+
     if protocol == "c3vdv2_curated":
         missing = [
             split_name
@@ -330,16 +451,18 @@ def main():
 
     print(
         f"  Protocol: {protocol}\n"
-        f"  Train: {len(train_seqs)} seqs | Val: {len(val_seqs)} | Test: {len(test_seqs)}"
+        f"  Train: {len(train_seqs)} seqs | Dev: {len(dev_seqs)} | "
+        f"Val: {len(val_seqs)} | Test: {len(test_seqs)}"
     )
 
     os.makedirs(args.output_dir, exist_ok=True)
     write_split(
         train_seqs, os.path.join(args.output_dir, "train.txt"), stride=args.train_stride
     )
+    write_split(dev_seqs, os.path.join(args.output_dir, "dev.txt"), stride=1)
     write_split(val_seqs, os.path.join(args.output_dir, "val.txt"), stride=1)
     write_split(test_seqs, os.path.join(args.output_dir, "test.txt"), stride=1)
-    write_manifest(args, protocol, train_seqs, val_seqs, test_seqs)
+    write_manifest(args, protocol, train_seqs, val_seqs, test_seqs, dev_seqs)
 
     print("Done.")
 

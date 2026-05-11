@@ -22,7 +22,6 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
-from typing import Optional
 import numpy as np
 import torch
 import cv2
@@ -30,38 +29,12 @@ from torch.utils.data import DataLoader
 
 from networks import ResnetEncoder, DepthDecoder
 from colon_datasets.c3vdv2_dataset import C3VDv2Dataset
-
-
-MIN_DEPTH = 0.001
-MAX_DEPTH = 0.100
-
-
-def compute_depth_metrics(gt: np.ndarray, pred: np.ndarray, mask: Optional[np.ndarray] = None):
-    """
-    Standard depth estimation metrics.
-    gt, pred: 1D arrays of valid depth values in metres.
-    """
-    if mask is not None:
-        gt = gt[mask]
-        pred = pred[mask]
-
-    # Median scale alignment (standard for self-supervised methods)
-    scale = np.median(gt) / np.median(pred)
-    pred = pred * scale
-
-    pred = np.clip(pred, MIN_DEPTH, MAX_DEPTH)
-
-    thresh = np.maximum(gt / pred, pred / gt)
-    d1 = (thresh < 1.25).mean()
-    d2 = (thresh < 1.25**2).mean()
-    d3 = (thresh < 1.25**3).mean()
-
-    abs_rel = np.mean(np.abs(gt - pred) / gt)
-    sq_rel = np.mean(((gt - pred) ** 2) / gt)
-    rmse = np.sqrt(np.mean((gt - pred) ** 2))
-    rmse_log = np.sqrt(np.mean((np.log(gt) - np.log(pred)) ** 2))
-
-    return abs_rel, sq_rel, rmse, rmse_log, d1, d2, d3
+from colon_datasets.c3vdv2_metrics import (
+    C3VD_MAX_DEPTH,
+    C3VD_MIN_DEPTH,
+    build_c3vdv2_valid_mask_np,
+    compute_depth_metrics_np,
+)
 
 
 def evaluate(args):
@@ -107,15 +80,22 @@ def evaluate(args):
             disp = depth_out[("disp", 0)].cpu().numpy().squeeze()
 
             # Convert disparity to metric depth
-            pred_depth = 1.0 / (disp * (1 / MIN_DEPTH - 1 / MAX_DEPTH) + 1 / MAX_DEPTH)
+            pred_depth = 1.0 / (
+                disp * (1 / C3VD_MIN_DEPTH - 1 / C3VD_MAX_DEPTH) + 1 / C3VD_MAX_DEPTH
+            )
 
             # Build validity mask
-            valid_mask = (gt_depth > MIN_DEPTH) & (gt_depth < MAX_DEPTH)
+            valid_mask = build_c3vdv2_valid_mask_np(gt_depth)
             if valid_mask.sum() < 10:
                 continue
 
-            metrics = compute_depth_metrics(gt_depth, pred_depth, valid_mask)
-            all_metrics.append(metrics)
+            metrics = compute_depth_metrics_np(
+                gt_depth,
+                pred_depth,
+                valid_mask,
+                median_scaling=args.median_scaling,
+            )
+            all_metrics.append([metrics[k] for k in ("abs_rel", "sq_rel", "rmse", "rmse_log", "a1", "a2", "a3")])
 
             # ---- Polyp-region metrics (if segmentation available) --------
             if args.seg_root:
@@ -129,13 +109,21 @@ def evaluate(args):
                     )
                     polyp_mask = (seg > 127) & valid_mask
                     if polyp_mask.sum() > 10:
-                        pm = compute_depth_metrics(gt_depth, pred_depth, polyp_mask)
-                        polyp_metrics.append(pm)
+                        pm = compute_depth_metrics_np(
+                            gt_depth,
+                            pred_depth,
+                            polyp_mask,
+                            median_scaling=args.median_scaling,
+                        )
+                        polyp_metrics.append(
+                            [pm[k] for k in ("abs_rel", "sq_rel", "rmse", "rmse_log", "a1", "a2", "a3")]
+                        )
 
     # ---- Report ----------------------------------------------------------
     print("\n========== C3VDv2 Depth Evaluation ==========")
     print(f"  Samples in split:  {len(dataset)}")
     print(f"  Samples evaluated: {len(all_metrics)}")
+    print(f"  Median scaling:    {'on' if args.median_scaling else 'off'}")
     if len(all_metrics) == 0:
         print("  [WARNING] No samples passed the depth validity mask.")
         print("==============================================\n")
@@ -177,6 +165,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--height", type=int, default=256)
     parser.add_argument("--width", type=int, default=320)
+    parser.add_argument(
+        "--median_scaling",
+        action="store_true",
+        help="Apply per-frame median scale alignment before metrics",
+    )
     args = parser.parse_args()
 
     if args.split_file is None and args.split is None:

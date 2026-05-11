@@ -40,6 +40,9 @@ HF_STREAMING="${HF_STREAMING:-0}"
 HF_CACHE_DIR="${HF_CACHE_DIR:-}"
 HF_SHUFFLE_BUFFER="${HF_SHUFFLE_BUFFER:-10000}"
 STEPS_PER_EPOCH="${STEPS_PER_EPOCH:-}"
+C3VDV2_VAL_BATCHES="${C3VDV2_VAL_BATCHES:-8}"
+C3VDV2_DEV_SPLIT_FILE="${C3VDV2_DEV_SPLIT_FILE:-}"
+C3VDV2_DEV_HF_SPLIT="${C3VDV2_DEV_HF_SPLIT:-}"
 
 # Optional: path to SCARED pretrained weights to warm-start Stage 1.
 # Set to "" to train Stage 1 from scratch.
@@ -113,6 +116,14 @@ if [ "$DATA_SOURCE" = "hf" ]; then
     if [ -n "$STEPS_PER_EPOCH" ]; then
         HF_ARGS+=(--steps_per_epoch "$STEPS_PER_EPOCH")
     fi
+    if [ -n "$C3VDV2_DEV_HF_SPLIT" ]; then
+        HF_ARGS+=(--c3vdv2_dev_hf_split "$C3VDV2_DEV_HF_SPLIT")
+    fi
+fi
+
+C3VDV2_ARGS=(--c3vdv2_val_batches "$C3VDV2_VAL_BATCHES")
+if [ -n "$C3VDV2_DEV_SPLIT_FILE" ]; then
+    C3VDV2_ARGS+=(--c3vdv2_dev_split_file "$C3VDV2_DEV_SPLIT_FILE")
 fi
 
 check_data() {
@@ -178,6 +189,7 @@ run_stage1() {
         --max_depth           "$MAX_DEPTH" \
         --save_frequency      5 \
         "${HF_ARGS[@]}" \
+        "${C3VDV2_ARGS[@]}" \
         $LOAD_WEIGHTS_ARG
 
     log "Stage 1 complete. Final weights: $S1_FINAL_WEIGHTS"
@@ -239,6 +251,7 @@ run_stage2() {
         --w_pose_end          "$W_POSE_END" \
         --ramp_epochs         "$RAMP_EPOCHS" \
         "${HF_ARGS[@]}" \
+        "${C3VDV2_ARGS[@]}" \
         $SPECULAR_ARGS
 
     log "Stage 2 complete."
@@ -254,8 +267,17 @@ echo "  GPU:          $GPU"
 echo "  Data source:  $DATA_SOURCE"
 echo "  Data:         $DATA_PATH"
 echo "  HF repo:      ${HF_REPO_ID:-none}"
+if [ "$DATA_SOURCE" = "hf" ]; then
+    if [ "$HF_STREAMING" = "1" ]; then
+        echo "  HF mode:      streaming"
+    else
+        echo "  HF mode:      cached"
+        echo "  HF cache:     ${HF_CACHE_DIR:-~/.cache/huggingface}"
+    fi
+fi
 echo "  Logs:         $LOG_DIR"
 echo "  Split:        $SPLIT"
+echo "  Val batches:  $C3VDV2_VAL_BATCHES"
 echo "  SpecularNet:  $USE_SPECULAR_NET"
 
 check_data

@@ -23,6 +23,14 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from colon_datasets.c3vdv2_dataset import C3VDv2Dataset
+from colon_datasets.c3vdv2_metrics import (
+    C3VD_MAX_DEPTH,
+    C3VD_MIN_DEPTH,
+    build_c3vdv2_valid_mask_torch,
+    depth_metric_sums_torch,
+    finalize_depth_metric_sums,
+    merge_depth_metric_sums,
+)
 from .c3vdv2_losses import (
     scale_invariant_log_loss,
     pose_loss,
@@ -36,9 +44,6 @@ from .stage_two import StageTwoTrainer
 # Paper constants (Section 4.2)
 PAPER_BETA1 = 0.9
 PAPER_BETA2 = 0.99
-
-C3VD_MIN_DEPTH = 0.001   # 1 mm
-C3VD_MAX_DEPTH = 0.100   # 100 mm
 
 
 # ── Shared mixin ─────────────────────────────────────────────────────────────
@@ -64,10 +69,12 @@ class _C3VDv2DataMixin(BaseTrainer):
         return super().compute_losses(inputs, outputs)      # type: ignore[abstract]
 
     def build_dataloaders(self):
+        self.dev_loader = None
         if self.opt.data_source == "hf":
             return self._build_hf_c3vdv2_dataloaders()
 
         undistort_maps = getattr(self.opt, "undistort_maps", "undistort_maps/")
+        dev_split_file = self._local_dev_split_file()
 
         train_dataset = C3VDv2Dataset(
             data_root=self.opt.data_path,
@@ -83,6 +90,15 @@ class _C3VDv2DataMixin(BaseTrainer):
             target_size=(self.opt.height, self.opt.width),
             augment=False,
         )
+        dev_dataset = None
+        if dev_split_file is not None:
+            dev_dataset = C3VDv2Dataset(
+                data_root=self.opt.data_path,
+                split_file=dev_split_file,
+                undistort_maps=undistort_maps,
+                target_size=(self.opt.height, self.opt.width),
+                augment=False,
+            )
         self.train_loader = DataLoader(
             train_dataset, self.opt.batch_size,
             shuffle=True, num_workers=self.opt.num_workers,
@@ -93,11 +109,28 @@ class _C3VDv2DataMixin(BaseTrainer):
             shuffle=False, num_workers=self.opt.num_workers,
             pin_memory=True, drop_last=True,
         )
+        if dev_dataset is not None:
+            self.dev_loader = DataLoader(
+                dev_dataset, self.opt.batch_size,
+                shuffle=False, num_workers=self.opt.num_workers,
+                pin_memory=True, drop_last=True,
+            )
         self.val_iter = iter(self.val_loader)
         self.num_total_steps = (
             len(train_dataset) // self.opt.batch_size * self.opt.num_epochs
         )
-        print(f"  Train: {len(train_dataset):,}  Val: {len(val_dataset):,}")
+        dev_count = 0 if dev_dataset is None else len(dev_dataset)
+        print(
+            f"  Train: {len(train_dataset):,}  Val: {len(val_dataset):,}"
+            f"  Dev: {dev_count:,}"
+        )
+
+    def _local_dev_split_file(self) -> str | None:
+        explicit = getattr(self.opt, "c3vdv2_dev_split_file", None)
+        if explicit:
+            return os.path.expanduser(explicit)
+        candidate = os.path.join("splits", self.opt.split, "dev.txt")
+        return candidate if os.path.exists(candidate) else None
 
     def _build_hf_c3vdv2_dataloaders(self):
         if not self.opt.hf_repo_id:
@@ -127,6 +160,19 @@ class _C3VDv2DataMixin(BaseTrainer):
             scales=self.opt.scales,
             shuffle_buffer=0,
         )
+        dev_dataset = None
+        if self.opt.c3vdv2_dev_hf_split:
+            dev_dataset = build_hf_triplet_dataset(
+                repo_id=self.opt.hf_repo_id,
+                split=self.opt.c3vdv2_dev_hf_split,
+                streaming=self.opt.hf_streaming,
+                cache_dir=self.opt.hf_cache_dir,
+                target_size=(self.opt.height, self.opt.width),
+                is_train=False,
+                output_format="c3vdv2",
+                scales=self.opt.scales,
+                shuffle_buffer=0,
+            )
 
         train_workers = 0 if self.opt.hf_streaming else self.opt.num_workers
         val_workers = 0 if self.opt.hf_streaming else 1
@@ -146,14 +192,24 @@ class _C3VDv2DataMixin(BaseTrainer):
             pin_memory=True,
             drop_last=True,
         )
+        if dev_dataset is not None:
+            self.dev_loader = DataLoader(
+                dev_dataset,
+                self.opt.batch_size,
+                shuffle=False,
+                num_workers=val_workers,
+                pin_memory=True,
+                drop_last=True,
+            )
         self.val_iter = iter(self.val_loader)
         self.num_total_steps = self._num_total_steps(train_dataset)
         print(f"Using HF C3VDv2 dataset: {self.opt.hf_repo_id}")
         print(
-            "  mode={} train={} val={}".format(
+            "  mode={} train={} val={} dev={}".format(
                 "streaming" if self.opt.hf_streaming else "cached",
                 self._dataset_len(train_dataset),
                 self._dataset_len(val_dataset),
+                self._dataset_len(dev_dataset) if dev_dataset is not None else "disabled",
             )
         )
 
@@ -314,6 +370,115 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
         print(f"  Epoch {self.epoch}  |  w_depth={self.w_depth:.3f}  w_pose={self.w_pose:.3f}")
         super().run_epoch()
 
+    def val(self):
+        """Log C3VDv2 metric validation over fixed batches instead of one moving batch."""
+        if getattr(self.opt, "c3vdv2_val_batches", 0) <= 0:
+            return super().val()
+
+        self.set_eval()
+        logged = False
+        with torch.no_grad():
+            if getattr(self, "dev_loader", None) is not None:
+                logged |= self._log_c3vdv2_loader_metrics("dev", self.dev_loader)
+            logged |= self._log_c3vdv2_loader_metrics("ood_t4", self.val_loader)
+
+        self.set_train()
+        if not logged:
+            return super().val()
+
+    def _log_c3vdv2_loader_metrics(self, prefix: str, loader) -> bool:
+        max_batches = max(int(getattr(self.opt, "c3vdv2_val_batches", 0)), 0)
+        if max_batches == 0:
+            return False
+
+        metric_totals = {}
+        ncc_total = 0.0
+        depth_loss_total = 0.0
+        depth_loss_batches = 0
+        pose_loss_total = 0.0
+        pose_loss_batches = 0
+        batches = 0
+
+        for batch_idx, raw_inputs in enumerate(loader):
+            if batch_idx >= max_batches:
+                break
+
+            inputs = self._adapt_keys(raw_inputs)
+            outputs, ncc_losses = BaseTrainer.process_batch_val(self, inputs)
+            batches += 1
+            ncc_total += float(ncc_losses["loss"].detach().cpu())
+
+            if "gt_depth" in inputs and ("depth", 0, 0) in outputs:
+                gt_depth = inputs["gt_depth"]
+                pred_depth = outputs[("depth", 0, 0)]
+                depth_mask = build_c3vdv2_valid_mask_torch(
+                    gt_depth, inputs.get("occlusion")
+                )
+                merge_depth_metric_sums(
+                    metric_totals,
+                    depth_metric_sums_torch(gt_depth, pred_depth, depth_mask),
+                )
+                l_depth = scale_invariant_log_loss(
+                    pred_depth, gt_depth, depth_mask.float()
+                )
+                depth_loss_total += float(l_depth.detach().cpu())
+                depth_loss_batches += 1
+
+            l_pose = self._supervised_pose_loss(inputs, outputs)
+            if l_pose is not None:
+                pose_loss_total += float(l_pose.detach().cpu())
+                pose_loss_batches += 1
+
+            del raw_inputs, inputs, outputs, ncc_losses
+
+        if batches == 0:
+            return False
+
+        writer = self.writers["val"]
+        writer.add_scalar(f"{prefix}/ncc_registration", ncc_total / batches, self.step)
+        writer.add_scalar(f"{prefix}/batches", batches, self.step)
+
+        metrics = finalize_depth_metric_sums(metric_totals)
+        if metrics["valid_pixels"] > 0:
+            for key in ("abs_rel", "sq_rel", "rmse", "rmse_mm", "rmse_log", "a1", "a2", "a3"):
+                writer.add_scalar(f"{prefix}/{key}", metrics[key], self.step)
+            writer.add_scalar(f"{prefix}/valid_pixels", metrics["valid_pixels"], self.step)
+
+        if depth_loss_batches > 0:
+            writer.add_scalar(
+                f"{prefix}/depth_supervised",
+                depth_loss_total / depth_loss_batches,
+                self.step,
+            )
+        if pose_loss_batches > 0:
+            writer.add_scalar(
+                f"{prefix}/pose_supervised",
+                pose_loss_total / pose_loss_batches,
+                self.step,
+            )
+        return True
+
+    def _supervised_pose_loss(self, inputs, outputs):
+        gt_key_map = {
+            -1: ("axang_curr2prev", "trans_curr2prev"),
+             1: ("axang_curr2next", "trans_curr2next"),
+        }
+        total_pose = 0.0
+        n = 0
+        for f_i in self.opt.frame_ids[1:]:
+            if f_i == "s" or f_i not in gt_key_map:
+                continue
+            axk, trk = gt_key_map[f_i]
+            if axk not in inputs or ("axisangle", 0, f_i) not in outputs:
+                continue
+            pred_ax = outputs[("axisangle", 0, f_i)].squeeze(1)
+            pred_tr = outputs[("translation", 0, f_i)].squeeze(1)
+            total_pose += pose_loss(pred_ax, pred_tr, inputs[axk], inputs[trk])
+            n += 1
+        if n == 0:
+            return None
+        return total_pose / n
+
     def compute_losses(self, inputs, outputs):
         losses = super().compute_losses(inputs, outputs)
 
@@ -321,11 +486,9 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
         if "gt_depth" in inputs:
             gt_depth = inputs["gt_depth"]
             pred_depth = outputs[("depth", 0, 0)]
-            depth_mask = (
-                (gt_depth > C3VD_MIN_DEPTH) & (gt_depth < C3VD_MAX_DEPTH - 0.001)
+            depth_mask = build_c3vdv2_valid_mask_torch(
+                gt_depth, inputs.get("occlusion")
             ).float()
-            if "occlusion" in inputs:
-                depth_mask = depth_mask * (1.0 - inputs["occlusion"])
             l_depth = scale_invariant_log_loss(pred_depth, gt_depth, depth_mask)
             losses["loss/depth_supervised"] = l_depth
             losses["loss"] = losses["loss"] + self.w_depth * l_depth
@@ -348,26 +511,9 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             losses["loss"] = losses["loss"] + w_spec * l_specular
 
         # Supervised pose
-        gt_key_map = {
-            -1: ("axang_curr2prev", "trans_curr2prev"),
-             1: ("axang_curr2next", "trans_curr2next"),
-        }
-        if "axang_curr2prev" in inputs:
-            total_pose = 0.0
-            n = 0
-            for f_i in self.opt.frame_ids[1:]:
-                if f_i == "s" or f_i not in gt_key_map:
-                    continue
-                axk, trk = gt_key_map[f_i]
-                if axk not in inputs:
-                    continue
-                pred_ax = outputs[("axisangle", 0, f_i)].squeeze(1)
-                pred_tr = outputs[("translation", 0, f_i)].squeeze(1)
-                total_pose += pose_loss(pred_ax, pred_tr, inputs[axk], inputs[trk])
-                n += 1
-            if n > 0:
-                l_pose = total_pose / n
-                losses["loss/pose_supervised"] = l_pose
-                losses["loss"] = losses["loss"] + self.w_pose * l_pose
+        l_pose = self._supervised_pose_loss(inputs, outputs)
+        if l_pose is not None:
+            losses["loss/pose_supervised"] = l_pose
+            losses["loss"] = losses["loss"] + self.w_pose * l_pose
 
         return losses

@@ -168,6 +168,18 @@ class TrainingConfig(BaseModel):
     w_pose_start: float = Field(default=0.5, description="supervised pose weight at epoch 0")
     w_pose_end: float = Field(default=0.1, description="supervised pose weight at final epoch")
     ramp_epochs: int = Field(default=8, description="epochs before supervised weights start ramping")
+    c3vdv2_val_batches: int = Field(
+        default=8,
+        description="number of fixed validation batches for C3VDv2 depth/pose metric logging; 0 disables",
+    )
+    c3vdv2_dev_split_file: Optional[str] = Field(
+        default=None,
+        description="optional local C3VDv2 dev split file; defaults to splits/<split>/dev.txt when present",
+    )
+    c3vdv2_dev_hf_split: Optional[str] = Field(
+        default=None,
+        description="optional Hugging Face split name for in-domain C3VDv2 dev metric logging",
+    )
 
     # ── SpecularNet ───────────────────────────────────────────────────────────
     use_specular_net: bool = Field(
