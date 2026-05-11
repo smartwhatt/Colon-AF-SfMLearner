@@ -63,6 +63,15 @@ language:
 tags:
 - endoscopy
 - colonoscopy
+configs:
+- config_name: default
+  data_files:
+  - split: train
+    path: data/train/**/*.parquet
+  - split: val
+    path: data/val/**/*.parquet
+  - split: test
+    path: data/test/**/*.parquet
 - depth
 - pose
 - medical
@@ -525,45 +534,51 @@ def process_sequence(seq_dir, seq_name, split, map1, map2,
 # ---------------------------------------------------------------------------
 
 def fix_dataset_info(repo_id, hf_token=None):
-    """Download dataset_info.json from HF, rename any 'validation' split to 'val', re-upload."""
-    import json
+    """Push a corrected README.md with explicit configs/data_files globs so the datasets
+    library can find nested parquet files at data/{split}/{sequence}/{shard}.parquet."""
     from huggingface_hub import HfApi, hf_hub_download
 
     api = HfApi(token=hf_token)
 
-    # Download current dataset_info.json
+    # Download current README
     local_path = hf_hub_download(
         repo_id=repo_id,
-        filename="dataset_info.json",
+        filename="README.md",
         repo_type="dataset",
         token=hf_token,
     )
     with open(local_path) as f:
-        info = json.load(f)
+        readme = f.read()
 
-    # Patch: rename 'validation' → 'val' in splits list
-    changed = False
-    for entry in info.get("splits", []):
-        if entry.get("name") == "validation":
-            entry["name"] = "val"
-            changed = True
-            print("  Renamed split 'validation' → 'val'")
+    configs_block = (
+        "configs:\n"
+        "- config_name: default\n"
+        "  data_files:\n"
+        "  - split: train\n"
+        "    path: data/train/**/*.parquet\n"
+        "  - split: val\n"
+        "    path: data/val/**/*.parquet\n"
+        "  - split: test\n"
+        "    path: data/test/**/*.parquet\n"
+    )
 
-    if not changed:
-        print("  No 'validation' split found — nothing to fix.")
-        print(f"  Current splits: {[s.get('name') for s in info.get('splits', [])]}")
+    if "configs:" in readme:
+        print("  README already has a 'configs:' block — no change needed.")
         return
 
-    fixed = json.dumps(info, indent=2).encode()
+    # Insert configs block just before the closing '---' of the YAML front matter
+    readme = readme.replace("---\n\n# C3VDv2", f"{configs_block}---\n\n# C3VDv2", 1)
+
     api.upload_file(
-        path_or_fileobj=fixed,
-        path_in_repo="dataset_info.json",
+        path_or_fileobj=readme.encode(),
+        path_in_repo="README.md",
         repo_id=repo_id,
         repo_type="dataset",
-        commit_message="Fix split name: validation → val",
+        commit_message="Add configs/data_files globs for nested parquet structure",
     )
-    print("  Uploaded corrected dataset_info.json")
-    print("  Delete your local HF cache before re-running training so it picks up the fix.")
+    print("  Uploaded README.md with explicit data_files patterns.")
+    print("  Delete the cached snapshot on the training machine and re-run training:"
+          "\n    rm -rf /media/data01/smartwatt/hf/hub/datasets--SmartWhatt--c3vdv2-SfM")
 
 
 def main():
