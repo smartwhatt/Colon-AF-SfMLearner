@@ -117,10 +117,6 @@ dataset_info:
     dtype: float32
   - name: frame_stride
     dtype: int32
-  splits:
-  - name: train
-  - name: val
-  - name: test
 ---
 
 # C3VDv2 — Colonoscopy 3D Video Dataset v2
@@ -562,12 +558,16 @@ def fix_dataset_info(repo_id, hf_token=None):
         "    path: data/test/**/*.parquet\n"
     )
 
-    if "configs:" in readme:
-        print("  README already has a 'configs:' block — no change needed.")
-        return
+    import re
 
-    # Insert configs block just before the closing '---' of the YAML front matter
-    readme = readme.replace("---\n\n# C3VDv2", f"{configs_block}---\n\n# C3VDv2", 1)
+    # Remove bare splits block (names only, no counts) — it causes NonMatchingSplitsSizesError
+    readme = re.sub(r"  splits:\n(  - name: \w+\n)+", "", readme)
+
+    if "configs:" in readme:
+        print("  README already has a 'configs:' block.")
+    else:
+        # Insert configs block just before the closing '---' of the YAML front matter
+        readme = readme.replace("---\n\n# C3VDv2", f"{configs_block}---\n\n# C3VDv2", 1)
 
     api.upload_file(
         path_or_fileobj=readme.encode(),
