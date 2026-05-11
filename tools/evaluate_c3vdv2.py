@@ -8,12 +8,20 @@ plus polyp-region metrics when a segmentation mask directory is provided.
 
 Run from AF-SfMLearner repo root:
 
-    python evaluate_c3vdv2.py \
+    python tools/evaluate_c3vdv2.py \
         --data_root       /path/to/C3VDv2 \
         --split_file      splits/c3vdv2/test.txt \
         --undistort_maps  /path/to/undistort_maps \
         --weights_folder  logs/c3vdv2_finetune/weights_29 \
         --seg_root        /path/to/segmentation_masks   # optional
+
+Or evaluate the Hugging Face C3VDv2 package directly:
+
+    python tools/evaluate_c3vdv2.py \
+        --data_source     hf \
+        --hf_repo_id      username/c3vdv2 \
+        --hf_split        test \
+        --weights_folder  logs/c3vdv2/stage2/models/weights_19
 
 """
 
@@ -37,6 +45,62 @@ from colon_datasets.c3vdv2_metrics import (
 )
 
 
+def _build_loader(args):
+    if args.data_source == "hf":
+        from colon_datasets.hf_triplet_dataset import build_hf_triplet_dataset
+
+        dataset = build_hf_triplet_dataset(
+            repo_id=args.hf_repo_id,
+            split=args.hf_split,
+            streaming=args.hf_streaming,
+            cache_dir=args.hf_cache_dir,
+            target_size=(args.height, args.width),
+            is_train=False,
+            output_format="c3vdv2",
+            scales=(0,),
+            shuffle_buffer=0,
+        )
+        num_workers = 0 if args.hf_streaming else args.num_workers
+    else:
+        dataset = C3VDv2Dataset(
+            data_root=args.data_root,
+            split_file=args.split_file,
+            undistort_maps=args.undistort_maps,
+            target_size=(args.height, args.width),
+            augment=False,
+        )
+        num_workers = args.num_workers
+
+    loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=num_workers)
+    return dataset, loader
+
+
+def _safe_len(dataset):
+    try:
+        return len(dataset)
+    except TypeError:
+        return None
+
+
+def _batch_metadata(batch):
+    seq = ""
+    frame_idx = None
+
+    if "seq" in batch:
+        seq_value = batch["seq"]
+        seq = seq_value[0] if isinstance(seq_value, (list, tuple)) else str(seq_value)
+    if "frame_idx" in batch:
+        idx_value = batch["frame_idx"]
+        if hasattr(idx_value, "item"):
+            frame_idx = int(idx_value.item())
+        elif isinstance(idx_value, (list, tuple)) and idx_value:
+            frame_idx = int(idx_value[0])
+        else:
+            frame_idx = int(idx_value)
+
+    return seq, frame_idx
+
+
 def evaluate(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -55,14 +119,8 @@ def evaluate(args):
     depth_decoder.eval().to(device)
 
     # ---- Dataset (used for colour frames and metadata only) --------------
-    dataset = C3VDv2Dataset(
-        data_root=args.data_root,
-        split_file=args.split_file,
-        undistort_maps=args.undistort_maps,
-        target_size=(args.height, args.width),
-        augment=False,
-    )
-    loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=4)
+    dataset, loader = _build_loader(args)
+    sample_count = _safe_len(dataset)
 
     # ---- Evaluation loop -------------------------------------------------
     all_metrics = []
@@ -70,10 +128,14 @@ def evaluate(args):
 
     with torch.no_grad():
         for batch in loader:
+            if "gt_depth" not in batch:
+                raise ValueError(
+                    "Evaluation requires ground-truth depth. "
+                    "Use a C3VDv2 HF split with depth labels."
+                )
             color_curr = batch["color_curr"].to(device)
             gt_depth = batch["gt_depth"].numpy().squeeze()  # H,W
-            seq = batch["seq"][0]
-            frame_idx = batch["frame_idx"].item()
+            seq, frame_idx = _batch_metadata(batch)
 
             features = encoder(color_curr)
             depth_out = depth_decoder(features)
@@ -98,7 +160,7 @@ def evaluate(args):
             all_metrics.append([metrics[k] for k in ("abs_rel", "sq_rel", "rmse", "rmse_log", "a1", "a2", "a3")])
 
             # ---- Polyp-region metrics (if segmentation available) --------
-            if args.seg_root:
+            if args.seg_root and seq and frame_idx is not None:
                 seg_path = os.path.join(args.seg_root, seq, f"{frame_idx:04d}_seg.png")
                 if os.path.exists(seg_path):
                     seg = cv2.imread(seg_path, cv2.IMREAD_GRAYSCALE)
@@ -121,7 +183,10 @@ def evaluate(args):
 
     # ---- Report ----------------------------------------------------------
     print("\n========== C3VDv2 Depth Evaluation ==========")
-    print(f"  Samples in split:  {len(dataset)}")
+    if sample_count is None:
+        print("  Samples in split:  unknown (streaming)")
+    else:
+        print(f"  Samples in split:  {sample_count}")
     print(f"  Samples evaluated: {len(all_metrics)}")
     print(f"  Median scaling:    {'on' if args.median_scaling else 'off'}")
     if len(all_metrics) == 0:
@@ -151,13 +216,23 @@ def evaluate(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_root", required=True)
+    parser.add_argument(
+        "--data_source",
+        choices=["local", "hf"],
+        default="local",
+        help="data backend to use, matching training",
+    )
+    parser.add_argument("--data_root", "--data_path", dest="data_root", default=None)
     parser.add_argument("--split_file", default=None,
                         help="Path to split txt file. Mutually exclusive with --split.")
     parser.add_argument("--split", default=None,
                         help="Split name (e.g. c3vdv2); resolves to splits/<split>/test.txt")
-    parser.add_argument("--undistort_maps", required=True)
-    parser.add_argument("--weights_folder", required=True)
+    parser.add_argument("--undistort_maps", default=None)
+    parser.add_argument("--hf_repo_id", default=None)
+    parser.add_argument("--hf_split", default="test")
+    parser.add_argument("--hf_streaming", action="store_true")
+    parser.add_argument("--hf_cache_dir", default=None)
+    parser.add_argument("--weights_folder", "--load_weights_folder", dest="weights_folder", required=True)
     parser.add_argument(
         "--seg_root",
         default=None,
@@ -165,6 +240,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--height", type=int, default=256)
     parser.add_argument("--width", type=int, default=320)
+    parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument(
         "--median_scaling",
         action="store_true",
@@ -172,10 +248,18 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    if args.split_file is None and args.split is None:
-        parser.error("one of --split_file or --split is required")
-    if args.split_file is None:
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        args.split_file = os.path.join(repo_root, "splits", args.split, "test.txt")
+    if args.data_source == "hf":
+        if args.hf_repo_id is None:
+            parser.error("--hf_repo_id is required when --data_source hf")
+    else:
+        if args.data_root is None:
+            parser.error("--data_root/--data_path is required when --data_source local")
+        if args.undistort_maps is None:
+            parser.error("--undistort_maps is required when --data_source local")
+        if args.split_file is None and args.split is None:
+            parser.error("one of --split_file or --split is required when --data_source local")
+        if args.split_file is None:
+            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            args.split_file = os.path.join(repo_root, "splits", args.split, "test.txt")
 
     evaluate(args)

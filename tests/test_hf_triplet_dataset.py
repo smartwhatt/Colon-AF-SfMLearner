@@ -66,6 +66,8 @@ def test_hf_triplet_c3vdv2_format_with_labels():
     assert sample["gt_depth"].shape == (1, 4, 6)
     assert sample["occlusion"].shape == (1, 4, 6)
     assert sample["K"].shape == (3, 3)
+    assert sample["seq"] == "seq"
+    assert sample["frame_idx"] == 2
     assert sample["axang_curr2prev"].shape == (3,)
     assert sample["trans_curr2next"].shape == (3,)
 

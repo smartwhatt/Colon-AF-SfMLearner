@@ -119,6 +119,8 @@ class _HFTripletMixin:
             "rgb_curr_aug": aug_curr,
             "rgb_next_aug": aug_next,
             "K": self._load_K(row),
+            "seq": row.get("sequence", ""),
+            "frame_idx": row.get("frame_idx_curr", row.get("frame_idx", -1)),
         }
 
         if self._row_bool(row, "has_depth", row.get("depth") is not None):
@@ -143,6 +145,8 @@ class _HFTripletMixin:
             "color_curr": decoded["rgb_curr_aug"],
             "color_next": decoded["rgb_next_aug"],
             "K": decoded["K"],
+            "seq": decoded["seq"],
+            "frame_idx": decoded["frame_idx"],
         }
         for key in (
             "gt_depth",
