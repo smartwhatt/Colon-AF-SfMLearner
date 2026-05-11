@@ -23,7 +23,7 @@ export HF_SHUFFLE_BUFFER="10000"
 export STEPS_PER_EPOCH=""       # set e.g. "500" to cap steps when streaming
 
 export LOG_DIR="$PROJECT_DIR/logs/c3vdv2_hf"
-export GPU="1"
+export GPU="0"
 
 # Optional: SCARED Stage 1 pretrained weights for warm-start.
 # Set to "" to train Stage 1 from scratch.
