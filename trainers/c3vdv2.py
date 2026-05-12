@@ -376,20 +376,41 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             return super().val()
 
         self.set_eval()
-        logged = False
+        summaries = {}
         with torch.no_grad():
             if getattr(self, "dev_loader", None) is not None:
-                logged |= self._log_c3vdv2_loader_metrics("dev", self.dev_loader)
-            logged |= self._log_c3vdv2_loader_metrics("ood_t4", self.val_loader)
+                summary = self._log_c3vdv2_loader_metrics("dev", self.dev_loader)
+                if summary is not None:
+                    summaries["dev"] = summary
+            summary = self._log_c3vdv2_loader_metrics("ood_t4", self.val_loader)
+            if summary is not None:
+                summaries["ood_t4"] = summary
+
+            best_metric = self._best_metric_from_c3vdv2_summaries(summaries)
+            if best_metric is not None:
+                metric_name, metric_value, mode = best_metric
+                self._maybe_save_best_model(metric_name, metric_value, mode=mode)
 
         self.set_train()
-        if not logged:
+        if not summaries:
             return super().val()
 
-    def _log_c3vdv2_loader_metrics(self, prefix: str, loader) -> bool:
+    @staticmethod
+    def _best_metric_from_c3vdv2_summaries(summaries):
+        """Prefer in-domain dev depth, then trajectory-OOD depth, then fallbacks."""
+        for prefix in ("dev", "ood_t4"):
+            summary = summaries.get(prefix)
+            if not summary:
+                continue
+            for key in ("rmse_mm", "depth_supervised", "ncc_registration"):
+                if key in summary:
+                    return f"{prefix}/{key}", summary[key], "min"
+        return None
+
+    def _log_c3vdv2_loader_metrics(self, prefix: str, loader) -> dict | None:
         max_batches = max(int(getattr(self.opt, "c3vdv2_val_batches", 0)), 0)
         if max_batches == 0:
-            return False
+            return None
 
         metric_totals = {}
         ncc_total = 0.0
@@ -432,31 +453,50 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             del raw_inputs, inputs, outputs, ncc_losses
 
         if batches == 0:
-            return False
+            return None
 
         writer = self.writers["val"]
-        writer.add_scalar(f"{prefix}/ncc_registration", ncc_total / batches, self.step)
+        summary = {
+            "ncc_registration": ncc_total / batches,
+            "batches": batches,
+        }
+        writer.add_scalar(
+            f"{prefix}/ncc_registration",
+            summary["ncc_registration"],
+            self.step,
+        )
         writer.add_scalar(f"{prefix}/batches", batches, self.step)
 
         metrics = finalize_depth_metric_sums(metric_totals)
         if metrics["valid_pixels"] > 0:
-            for key in ("abs_rel", "sq_rel", "rmse", "rmse_mm", "rmse_log", "a1", "a2", "a3"):
+            metric_keys = (
+                "abs_rel", "sq_rel", "rmse", "rmse_mm",
+                "rmse_log", "a1", "a2", "a3",
+            )
+            for key in metric_keys:
                 writer.add_scalar(f"{prefix}/{key}", metrics[key], self.step)
-            writer.add_scalar(f"{prefix}/valid_pixels", metrics["valid_pixels"], self.step)
+            writer.add_scalar(
+                f"{prefix}/valid_pixels",
+                metrics["valid_pixels"],
+                self.step,
+            )
+            summary.update(metrics)
 
         if depth_loss_batches > 0:
+            summary["depth_supervised"] = depth_loss_total / depth_loss_batches
             writer.add_scalar(
                 f"{prefix}/depth_supervised",
-                depth_loss_total / depth_loss_batches,
+                summary["depth_supervised"],
                 self.step,
             )
         if pose_loss_batches > 0:
+            summary["pose_supervised"] = pose_loss_total / pose_loss_batches
             writer.add_scalar(
                 f"{prefix}/pose_supervised",
-                pose_loss_total / pose_loss_batches,
+                summary["pose_supervised"],
                 self.step,
             )
-        return True
+        return summary
 
     def _supervised_pose_loss(self, inputs, outputs):
         gt_key_map = {

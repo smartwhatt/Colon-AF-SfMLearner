@@ -95,7 +95,9 @@ fi
 SKIP_STAGE1="${SKIP_STAGE1:-0}"
 
 # S1_FINAL_WEIGHTS can be overridden externally (e.g. SKIP_STAGE1=1 with existing ckpt)
-S1_FINAL_WEIGHTS="${S1_FINAL_WEIGHTS:-${LOG_DIR}/${S1_LOG_NAME}/models/weights_$((S1_EPOCHS - 1))/}"
+S1_FINAL_WEIGHTS_DEFAULT="${LOG_DIR}/${S1_LOG_NAME}/models/weights_$((S1_EPOCHS - 1))/"
+S1_BEST_WEIGHTS="${LOG_DIR}/${S1_LOG_NAME}/models/weights_best/"
+S1_FINAL_WEIGHTS="${S1_FINAL_WEIGHTS:-$S1_BEST_WEIGHTS}"
 
 # =============================================================================
 # HELPERS
@@ -161,7 +163,8 @@ run_stage1() {
     echo "  What:    position_encoder + position (only)"
     echo "  Loss:    photometric + smoothness  (no GT supervision)"
     echo "  Epochs:  $S1_EPOCHS  LR: $S1_LR  Batch: $S1_BATCH"
-    echo "  Output:  $S1_FINAL_WEIGHTS"
+    echo "  Output:  $S1_FINAL_WEIGHTS_DEFAULT"
+    echo "  Best:    $S1_BEST_WEIGHTS"
 
     LOAD_WEIGHTS_ARG=""
     if [ -n "$SCARED_STAGE1_WEIGHTS" ] && [ -d "$SCARED_STAGE1_WEIGHTS" ]; then
@@ -192,7 +195,8 @@ run_stage1() {
         "${C3VDV2_ARGS[@]}" \
         $LOAD_WEIGHTS_ARG
 
-    log "Stage 1 complete. Final weights: $S1_FINAL_WEIGHTS"
+    log "Stage 1 complete. Final weights: $S1_FINAL_WEIGHTS_DEFAULT"
+    echo "  Best weights:  $S1_BEST_WEIGHTS"
 }
 
 # =============================================================================
@@ -256,6 +260,7 @@ run_stage2() {
 
     log "Stage 2 complete."
     echo "  Final weights: ${LOG_DIR}/${S2_LOG_NAME}/models/weights_$((S2_EPOCHS - 1))/"
+    echo "  Best weights:  ${LOG_DIR}/${S2_LOG_NAME}/models/weights_best/"
 }
 
 # =============================================================================
@@ -291,14 +296,37 @@ fi
 run_stage2
 
 S2_FINAL_WEIGHTS="${LOG_DIR}/${S2_LOG_NAME}/models/weights_$((S2_EPOCHS - 1))/"
+S2_BEST_WEIGHTS="${LOG_DIR}/${S2_LOG_NAME}/models/weights_best/"
 
 log "ALL DONE"
 echo ""
-echo "  Evaluate with:"
-echo "  uv run python tools/evaluate_c3vdv2.py \\"
-echo "      --data_root $DATA_PATH \\"
-echo "      --weights_folder $S2_FINAL_WEIGHTS \\"
-echo "      --split $SPLIT"
+if [ "$DATA_SOURCE" = "hf" ]; then
+    echo "  Evaluate best checkpoint with:"
+    echo "  uv run python tools/evaluate_c3vdv2.py \\"
+    echo "      --data_source hf \\"
+    echo "      --hf_repo_id \"$HF_REPO_ID\" \\"
+    echo "      --hf_split test \\"
+    echo "      --weights_folder $S2_BEST_WEIGHTS"
+    echo ""
+    echo "  Evaluate final checkpoint with:"
+    echo "  uv run python tools/evaluate_c3vdv2.py \\"
+    echo "      --data_source hf \\"
+    echo "      --hf_repo_id \"$HF_REPO_ID\" \\"
+    echo "      --hf_split test \\"
+    echo "      --weights_folder $S2_FINAL_WEIGHTS"
+else
+    echo "  Evaluate best checkpoint with:"
+    echo "  uv run python tools/evaluate_c3vdv2.py \\"
+    echo "      --data_root $DATA_PATH \\"
+    echo "      --weights_folder $S2_BEST_WEIGHTS \\"
+    echo "      --split $SPLIT"
+    echo ""
+    echo "  Evaluate final checkpoint with:"
+    echo "  uv run python tools/evaluate_c3vdv2.py \\"
+    echo "      --data_root $DATA_PATH \\"
+    echo "      --weights_folder $S2_FINAL_WEIGHTS \\"
+    echo "      --split $SPLIT"
+fi
 echo ""
 echo "  Monitor training:"
 echo "  uv run tensorboard --logdir $LOG_DIR"

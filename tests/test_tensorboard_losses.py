@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -158,3 +159,48 @@ def test_c3vdv2_supervised_losses_include_weighted_terms(monkeypatch):
     assert losses["loss_weighted/depth_supervised"].item() == pytest.approx(2.0)
     assert losses["loss/pose_supervised"].item() == pytest.approx(6.0)
     assert losses["loss_weighted/pose_supervised"].item() == pytest.approx(1.5)
+
+
+def test_best_checkpoint_saves_weights_and_metadata(tmp_path):
+    trainer = object.__new__(_ConcreteBaseTrainer)
+    model = torch.nn.Linear(1, 1)
+    trainer.models = {"toy": model}
+    trainer.model_optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    trainer.log_path = str(tmp_path)
+    trainer.best_model_metric = None
+    trainer.best_model_metadata = None
+    trainer.epoch = 2
+    trainer.step = 42
+
+    assert trainer._maybe_save_best_model("val/loss", torch.tensor(0.5), mode="min")
+
+    best_dir = tmp_path / "models" / "weights_best"
+    assert (best_dir / "toy.pth").is_file()
+    assert (best_dir / "adam.pth").is_file()
+    metadata = json.loads((best_dir / "best.json").read_text())
+    assert metadata["metric"] == "val/loss"
+    assert metadata["value"] == pytest.approx(0.5)
+    assert metadata["epoch"] == 2
+    assert metadata["step"] == 42
+
+    trainer.epoch = 3
+    trainer.step = 43
+    assert not trainer._maybe_save_best_model("val/loss", 0.6, mode="min")
+    assert trainer.best_model_metric == pytest.approx(0.5)
+
+
+def test_c3vdv2_best_metric_prefers_dev_then_ood_depth():
+    summaries = {
+        "ood_t4": {"rmse_mm": 3.0, "ncc_registration": 0.4},
+        "dev": {"rmse_mm": 5.0, "ncc_registration": 0.5},
+    }
+
+    assert C3VDv2Stage2Trainer._best_metric_from_c3vdv2_summaries(summaries) == (
+        "dev/rmse_mm",
+        5.0,
+        "min",
+    )
+
+    assert C3VDv2Stage2Trainer._best_metric_from_c3vdv2_summaries(
+        {"ood_t4": {"rmse_mm": 3.0}}
+    ) == ("ood_t4/rmse_mm", 3.0, "min")

@@ -114,6 +114,9 @@ class BaseTrainer(ABC):
         print("Models and tensorboard events files are saved to:\n  ", self.opt.log_dir)
         print("Training is using:\n  ", self.device)
 
+        self.best_model_metric = None
+        self.best_model_metadata = None
+
         # ── Data loaders ──────────────────────────────────────────────────────
         self.build_dataloaders()
 
@@ -384,6 +387,7 @@ class BaseTrainer(ABC):
         with torch.no_grad():
             outputs, losses = self.process_batch_val(inputs)
             self.log("val", inputs, outputs, losses)
+            self._maybe_save_best_model("val/loss", losses["loss"], mode="min")
             del inputs, outputs, losses
 
         self.set_train()
@@ -684,10 +688,10 @@ class BaseTrainer(ABC):
         with open(os.path.join(models_dir, "opt.json"), "w") as f:
             json.dump(self.opt.__dict__.copy(), f, indent=2)
 
-    def save_model(self):
-        save_folder = os.path.join(
-            self.log_path, "models", "weights_{}".format(self.epoch)
-        )
+    def save_model(self, folder_name=None):
+        if folder_name is None:
+            folder_name = "weights_{}".format(self.epoch)
+        save_folder = os.path.join(self.log_path, "models", folder_name)
         os.makedirs(save_folder, exist_ok=True)
 
         for model_name, model in self.models.items():
@@ -702,6 +706,52 @@ class BaseTrainer(ABC):
             self.model_optimizer.state_dict(),
             os.path.join(save_folder, "adam.pth"),
         )
+        return save_folder
+
+    def _maybe_save_best_model(self, metric_name, metric_value, mode="min"):
+        value = self._scalar_for_logging(metric_value)
+        if torch.is_tensor(value):
+            value = value.detach().cpu().item()
+        value = float(value)
+        if not np.isfinite(value):
+            return False
+
+        if mode not in {"min", "max"}:
+            raise ValueError("mode must be 'min' or 'max'")
+
+        current_best = self.best_model_metric
+        improved = (
+            current_best is None
+            or (mode == "min" and value < current_best)
+            or (mode == "max" and value > current_best)
+        )
+        if not improved:
+            return False
+
+        self.best_model_metric = value
+        self.best_model_metadata = {
+            "metric": metric_name,
+            "value": value,
+            "mode": mode,
+            "epoch": int(getattr(self, "epoch", -1)),
+            "step": int(getattr(self, "step", -1)),
+            "folder": "weights_best",
+        }
+        save_folder = self.save_model(folder_name="weights_best")
+        metadata_path = os.path.join(save_folder, "best.json")
+        with open(metadata_path, "w") as f:
+            json.dump(self.best_model_metadata, f, indent=2)
+
+        print(
+            "Saved new best checkpoint: {} = {:.6f} at epoch {} step {} -> {}".format(
+                metric_name,
+                value,
+                self.best_model_metadata["epoch"],
+                self.best_model_metadata["step"],
+                save_folder,
+            )
+        )
+        return True
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
