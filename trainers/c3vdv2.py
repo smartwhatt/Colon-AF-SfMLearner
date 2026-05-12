@@ -467,7 +467,12 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
         super().run_epoch()
 
     def val(self):
-        """Log C3VDv2 metric validation over fixed batches instead of one moving batch."""
+        """Log fixed-batch C3VDv2 validation metrics.
+
+        The Stage 2 training objective is logged as val/loss for comparison
+        against train/loss. Depth metrics and NCC registration diagnostics stay
+        under split-specific tags so they are not confused with the objective.
+        """
         if getattr(self.opt, "c3vdv2_val_batches", 0) <= 0:
             return super().val()
 
@@ -481,6 +486,14 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             summary = self._log_c3vdv2_loader_metrics("ood_t4", self.val_loader)
             if summary is not None:
                 summaries["ood_t4"] = summary
+
+            primary_summary = summaries.get("dev") or summaries.get("ood_t4")
+            if primary_summary is not None and "training_objective" in primary_summary:
+                self.writers["val"].add_scalar(
+                    "loss",
+                    primary_summary["training_objective"],
+                    self.step,
+                )
 
             best_metric = self._best_metric_from_c3vdv2_summaries(summaries)
             if best_metric is not None:
@@ -511,6 +524,7 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             return None
 
         metric_totals = {}
+        objective_total = 0.0
         ncc_total = 0.0
         depth_loss_total = 0.0
         depth_loss_batches = 0
@@ -523,8 +537,10 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
                 break
 
             inputs = self._adapt_keys(raw_inputs)
-            outputs, ncc_losses = BaseTrainer.process_batch_val(self, inputs)
+            outputs, objective_losses = StageTwoTrainer.process_batch(self, inputs)
+            ncc_losses = BaseTrainer.compute_losses_val(self, inputs, outputs)
             batches += 1
+            objective_total += float(objective_losses["loss"].detach().cpu())
             ncc_total += float(ncc_losses["loss"].detach().cpu())
 
             if "gt_depth" in inputs and ("depth", 0, 0) in outputs:
@@ -548,16 +564,22 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
                 pose_loss_total += float(l_pose.detach().cpu())
                 pose_loss_batches += 1
 
-            del raw_inputs, inputs, outputs, ncc_losses
+            del raw_inputs, inputs, outputs, objective_losses, ncc_losses
 
         if batches == 0:
             return None
 
         writer = self.writers["val"]
         summary = {
+            "training_objective": objective_total / batches,
             "ncc_registration": ncc_total / batches,
             "batches": batches,
         }
+        writer.add_scalar(
+            f"{prefix}/training_objective",
+            summary["training_objective"],
+            self.step,
+        )
         writer.add_scalar(
             f"{prefix}/ncc_registration",
             summary["ncc_registration"],
