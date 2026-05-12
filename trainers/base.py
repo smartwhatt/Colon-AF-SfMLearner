@@ -332,10 +332,13 @@ class BaseTrainer(ABC):
         self.epoch = 0
         self.step = 0
         self.start_time = time.time()
-        for self.epoch in range(self.opt.num_epochs):
-            self.run_epoch()
-            if (self.epoch + 1) % self.opt.save_frequency == 0:
-                self.save_model()
+        try:
+            for self.epoch in range(self.opt.num_epochs):
+                self.run_epoch()
+                if (self.epoch + 1) % self.opt.save_frequency == 0:
+                    self.save_model()
+        finally:
+            self.close_writers()
 
     def run_epoch(self):
         """Default: single-optimizer step per batch."""
@@ -429,12 +432,12 @@ class BaseTrainer(ABC):
                 )
             registration_losses = torch.cat(registration_losses, 1)
             registration_losses, _ = torch.min(registration_losses, dim=1)
-            loss = registration_losses.mean()
+            loss = -registration_losses.mean()
             total_loss += loss
             losses["loss/{}".format(scale)] = loss
 
         total_loss /= self.num_scales
-        losses["loss"] = -1 * total_loss
+        losses["loss"] = total_loss
         return losses
 
     # ── Shared forward methods ────────────────────────────────────────────────
@@ -600,8 +603,7 @@ class BaseTrainer(ABC):
     def log(self, mode, inputs, outputs, losses):
         """Default: log stage-2 style outputs (brightness, registration, refined, disp)."""
         writer = self.writers[mode]
-        for l, v in losses.items():
-            writer.add_scalar("{}".format(l), v, self.step)
+        self.log_scalars(mode, losses)
 
         for j in range(min(4, self.opt.batch_size)):
             for s in self.opt.scales:
@@ -632,6 +634,27 @@ class BaseTrainer(ABC):
                     normalize_image(outputs[("disp", s)][j]),
                     self.step,
                 )
+
+    def log_scalars(self, mode, losses, prefix=None):
+        writer = self.writers[mode]
+        for tag, value in losses.items():
+            if prefix is not None:
+                tag = "{}/{}".format(prefix, tag)
+            writer.add_scalar(tag, self._scalar_for_logging(value), self.step)
+
+    @staticmethod
+    def _scalar_for_logging(value):
+        if torch.is_tensor(value):
+            value = value.detach()
+            if value.numel() == 1:
+                return value.cpu().item()
+            return value.cpu()
+        return value
+
+    def close_writers(self):
+        for writer in getattr(self, "writers", {}).values():
+            writer.flush()
+            writer.close()
 
     def log_time(self, batch_idx, duration, loss):
         samples_per_sec = self.opt.batch_size / duration

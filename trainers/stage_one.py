@@ -108,11 +108,18 @@ class StageOneTrainer(BaseTrainer):
             registration_losses = torch.cat(registration_losses, 1)
             registration_losses, _ = torch.min(registration_losses, dim=1)
 
-            loss += registration_losses.mean()
-            loss += self.opt.position_smoothness * (loss_registration / 2.0) / (2 ** scale)
+            loss_photo = registration_losses.mean()
+            loss_smooth = self.opt.position_smoothness * (
+                loss_registration / 2.0
+            ) / (2 ** scale)
+
+            loss += loss_photo
+            loss += loss_smooth
 
             total_loss += loss
             losses["loss/{}".format(scale)] = loss
+            losses["loss_weighted/registration_photo/{}".format(scale)] = loss_photo
+            losses["loss_weighted/registration_smooth/{}".format(scale)] = loss_smooth
 
         total_loss /= self.num_scales
         losses["loss"] = total_loss
@@ -135,20 +142,19 @@ class StageOneTrainer(BaseTrainer):
                 )
             registration_losses = torch.cat(registration_losses, 1)
             registration_losses, _ = torch.min(registration_losses, dim=1)
-            loss = registration_losses.mean()
+            loss = -registration_losses.mean()
             total_loss += loss
             losses["loss/{}".format(scale)] = loss
 
         total_loss /= self.num_scales
-        losses["loss"] = -1 * total_loss
+        losses["loss"] = total_loss
         return losses
 
     # ── Logging ───────────────────────────────────────────────────────────────
 
     def log(self, mode, inputs, outputs, losses):
         writer = self.writers[mode]
-        for l, v in losses.items():
-            writer.add_scalar("{}".format(l), v, self.step)
+        self.log_scalars(mode, losses)
 
         for j in range(min(4, self.opt.batch_size)):
             for s in self.opt.scales:

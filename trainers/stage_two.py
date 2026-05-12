@@ -240,13 +240,32 @@ class StageTwoTrainer(BaseTrainer):
             norm_disp = disp / (mean_disp + 1e-7)
             smooth_loss = get_smooth_loss(norm_disp, color)
 
-            loss += loss_reprojection / 2.0
-            loss += self.opt.transform_constraint * (loss_transform / 2.0)
-            loss += self.opt.transform_smoothness * (loss_cvt / 2.0)
-            loss += self.opt.disparity_smoothness * smooth_loss / (2 ** scale)
+            loss_photo = loss_reprojection / 2.0
+            loss_transform_weighted = self.opt.transform_constraint * (
+                loss_transform / 2.0
+            )
+            loss_cvt_weighted = self.opt.transform_smoothness * (loss_cvt / 2.0)
+            loss_disp_smooth = self.opt.disparity_smoothness * smooth_loss / (
+                2 ** scale
+            )
+
+            loss += loss_photo
+            loss += loss_transform_weighted
+            loss += loss_cvt_weighted
+            loss += loss_disp_smooth
 
             total_loss += loss
             losses["loss/{}".format(scale)] = loss
+            losses["loss_weighted/reprojection/{}".format(scale)] = loss_photo
+            losses["loss_weighted/transform_constraint/{}".format(scale)] = (
+                loss_transform_weighted
+            )
+            losses["loss_weighted/transform_smoothness/{}".format(scale)] = (
+                loss_cvt_weighted
+            )
+            losses["loss_weighted/disparity_smoothness/{}".format(scale)] = (
+                loss_disp_smooth
+            )
 
         total_loss /= self.num_scales
         losses["loss"] = total_loss

@@ -491,7 +491,9 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             ).float()
             l_depth = scale_invariant_log_loss(pred_depth, gt_depth, depth_mask)
             losses["loss/depth_supervised"] = l_depth
-            losses["loss"] = losses["loss"] + self.w_depth * l_depth
+            weighted_depth = self.w_depth * l_depth
+            losses["loss_weighted/depth_supervised"] = weighted_depth
+            losses["loss"] = losses["loss"] + weighted_depth
 
         # Specular BCE weak supervision
         if getattr(self.opt, "use_specular_net", False) and ("specular", 0) in outputs:
@@ -508,12 +510,16 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             l_specular = specular_bce_loss(pred_s, pseudo)
             losses["loss/specular_bce"] = l_specular
             w_spec = getattr(self.opt, "specular_loss_weight", 0.05)
-            losses["loss"] = losses["loss"] + w_spec * l_specular
+            weighted_specular = w_spec * l_specular
+            losses["loss_weighted/specular_bce"] = weighted_specular
+            losses["loss"] = losses["loss"] + weighted_specular
 
         # Supervised pose
         l_pose = self._supervised_pose_loss(inputs, outputs)
         if l_pose is not None:
             losses["loss/pose_supervised"] = l_pose
-            losses["loss"] = losses["loss"] + self.w_pose * l_pose
+            weighted_pose = self.w_pose * l_pose
+            losses["loss_weighted/pose_supervised"] = weighted_pose
+            losses["loss"] = losses["loss"] + weighted_pose
 
         return losses
