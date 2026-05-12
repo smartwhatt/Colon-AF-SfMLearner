@@ -215,9 +215,15 @@ def test_c3vdv2_stage1_best_metric_prefers_dev_then_ood_ncc():
     assert C3VDv2Stage1Trainer._best_metric_from_stage1_summaries(summaries) == (
         "dev/ncc_registration",
         0.5,
-        "min",
+        "max",
     )
 
     assert C3VDv2Stage1Trainer._best_metric_from_stage1_summaries(
         {"ood_t4": {"ncc_registration": 0.4}}
-    ) == ("ood_t4/ncc_registration", 0.4, "min")
+    ) == ("ood_t4/ncc_registration", 0.4, "max")
+
+
+def test_c3vdv2_stage2_ncc_fallback_is_maximized():
+    assert C3VDv2Stage2Trainer._best_metric_from_c3vdv2_summaries(
+        {"ood_t4": {"ncc_registration": 0.4}}
+    ) == ("ood_t4/ncc_registration", 0.4, "max")

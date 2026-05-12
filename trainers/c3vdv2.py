@@ -349,7 +349,7 @@ class C3VDv2Stage1Trainer(_C3VDv2DataMixin, StageOneTrainer):
         for prefix in ("dev", "ood_t4"):
             summary = summaries.get(prefix)
             if summary and "ncc_registration" in summary:
-                return f"{prefix}/ncc_registration", summary["ncc_registration"], "min"
+                return f"{prefix}/ncc_registration", summary["ncc_registration"], "max"
         return None
 
     def _log_c3vdv2_registration_metrics(self, prefix: str, loader) -> dict | None:
@@ -498,9 +498,11 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             summary = summaries.get(prefix)
             if not summary:
                 continue
-            for key in ("rmse_mm", "depth_supervised", "ncc_registration"):
+            for key in ("rmse_mm", "depth_supervised"):
                 if key in summary:
                     return f"{prefix}/{key}", summary[key], "min"
+            if "ncc_registration" in summary:
+                return f"{prefix}/ncc_registration", summary["ncc_registration"], "max"
         return None
 
     def _log_c3vdv2_loader_metrics(self, prefix: str, loader) -> dict | None:
