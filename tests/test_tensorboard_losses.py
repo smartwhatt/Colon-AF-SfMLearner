@@ -13,7 +13,7 @@ import trainers.c3vdv2 as c3vdv2_module
 import trainers.stage_one as stage_one_module
 import trainers.stage_two as stage_two_module
 from trainers.base import BaseTrainer
-from trainers.c3vdv2 import C3VDv2Stage2Trainer
+from trainers.c3vdv2 import C3VDv2Stage1Trainer, C3VDv2Stage2Trainer
 from trainers.stage_one import StageOneTrainer
 from trainers.stage_two import StageTwoTrainer
 
@@ -204,3 +204,20 @@ def test_c3vdv2_best_metric_prefers_dev_then_ood_depth():
     assert C3VDv2Stage2Trainer._best_metric_from_c3vdv2_summaries(
         {"ood_t4": {"rmse_mm": 3.0}}
     ) == ("ood_t4/rmse_mm", 3.0, "min")
+
+
+def test_c3vdv2_stage1_best_metric_prefers_dev_then_ood_ncc():
+    summaries = {
+        "ood_t4": {"ncc_registration": 0.4},
+        "dev": {"ncc_registration": 0.5},
+    }
+
+    assert C3VDv2Stage1Trainer._best_metric_from_stage1_summaries(summaries) == (
+        "dev/ncc_registration",
+        0.5,
+        "min",
+    )
+
+    assert C3VDv2Stage1Trainer._best_metric_from_stage1_summaries(
+        {"ood_t4": {"ncc_registration": 0.4}}
+    ) == ("ood_t4/ncc_registration", 0.4, "min")

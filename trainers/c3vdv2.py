@@ -303,6 +303,102 @@ class C3VDv2Stage1Trainer(_C3VDv2DataMixin, StageOneTrainer):
         print(f"  LR: {self.opt.learning_rate}  Epochs: {self.opt.num_epochs}")
         print(f"{'='*60}\n")
 
+    def val(self):
+        """Log fixed-batch C3VDv2 registration metrics for Stage 1.
+
+        Stage 1 training uses photometric+smoothness loss. Log that same
+        objective as val/loss for train-vs-val comparison, and log NCC
+        registration quality under split-specific diagnostic tags.
+        """
+        if getattr(self.opt, "c3vdv2_val_batches", 0) <= 0:
+            return super().val()
+
+        self.set_eval()
+        summaries = {}
+        with torch.no_grad():
+            if getattr(self, "dev_loader", None) is not None:
+                summary = self._log_c3vdv2_registration_metrics(
+                    "dev", self.dev_loader
+                )
+                if summary is not None:
+                    summaries["dev"] = summary
+            summary = self._log_c3vdv2_registration_metrics("ood_t4", self.val_loader)
+            if summary is not None:
+                summaries["ood_t4"] = summary
+
+            primary_summary = summaries.get("dev") or summaries.get("ood_t4")
+            if primary_summary is not None and "training_objective" in primary_summary:
+                self.writers["val"].add_scalar(
+                    "loss",
+                    primary_summary["training_objective"],
+                    self.step,
+                )
+
+            best_metric = self._best_metric_from_stage1_summaries(summaries)
+            if best_metric is not None:
+                metric_name, metric_value, mode = best_metric
+                self._maybe_save_best_model(metric_name, metric_value, mode=mode)
+
+        self.set_train()
+        if not summaries:
+            return super().val()
+
+    @staticmethod
+    def _best_metric_from_stage1_summaries(summaries):
+        """Prefer in-domain dev NCC, then trajectory-OOD NCC."""
+        for prefix in ("dev", "ood_t4"):
+            summary = summaries.get(prefix)
+            if summary and "ncc_registration" in summary:
+                return f"{prefix}/ncc_registration", summary["ncc_registration"], "min"
+        return None
+
+    def _log_c3vdv2_registration_metrics(self, prefix: str, loader) -> dict | None:
+        max_batches = max(int(getattr(self.opt, "c3vdv2_val_batches", 0)), 0)
+        if max_batches == 0:
+            return None
+
+        ncc_total = 0.0
+        objective_total = 0.0
+        batches = 0
+        for batch_idx, raw_inputs in enumerate(loader):
+            if batch_idx >= max_batches:
+                break
+
+            inputs = self._adapt_keys(raw_inputs)
+            for key, ipt in inputs.items():
+                inputs[key] = ipt.to(self.device)
+
+            outputs = StageOneTrainer._predict_positions(self, inputs)
+            objective_losses = StageOneTrainer.compute_losses(self, inputs, outputs)
+            ncc_losses = StageOneTrainer.compute_losses_val(self, inputs, outputs)
+
+            ncc_total += float(ncc_losses["loss"].detach().cpu())
+            objective_total += float(objective_losses["loss"].detach().cpu())
+            batches += 1
+            del raw_inputs, inputs, outputs, objective_losses, ncc_losses
+
+        if batches == 0:
+            return None
+
+        summary = {
+            "ncc_registration": ncc_total / batches,
+            "training_objective": objective_total / batches,
+            "batches": batches,
+        }
+        writer = self.writers["val"]
+        writer.add_scalar(
+            f"{prefix}/training_objective",
+            summary["training_objective"],
+            self.step,
+        )
+        writer.add_scalar(
+            f"{prefix}/ncc_registration",
+            summary["ncc_registration"],
+            self.step,
+        )
+        writer.add_scalar(f"{prefix}/batches", batches, self.step)
+        return summary
+
 
 # ── Stage 2 fine-tune ────────────────────────────────────────────────────────
 
