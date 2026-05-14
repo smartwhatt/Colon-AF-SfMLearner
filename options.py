@@ -209,6 +209,12 @@ class TrainingConfig(BaseModel):
         description="nominal endoscope light baseline in millimetres for PPS geometry",
     )
 
+    # ── Uncertainty-weighted pose loss (B.1, Kendall & Cipolla CVPR 2017) ────────
+    use_uncertainty_pose: bool = Field(
+        default=False,
+        description="learn rotation/translation uncertainty scales in supervised pose loss (Kendall & Cipolla 2017)",
+    )
+
     # ── Logging ───────────────────────────────────────────────────────────────
     log_frequency: int = Field(default=200, description="batches between TensorBoard log writes")
     save_frequency: int = Field(default=1, description="epochs between model saves")

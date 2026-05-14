@@ -87,6 +87,11 @@ PPS_SUP_WEIGHT="${PPS_SUP_WEIGHT:-0.0}"
 PPS_SELF_WEIGHT="${PPS_SELF_WEIGHT:-0.0}"
 PPS_LIGHT_BASELINE_MM="${PPS_LIGHT_BASELINE_MM:-3.0}"
 
+# ── Uncertainty-weighted pose loss (B.1, Kendall & Cipolla CVPR 2017) ─────────
+# USE_UNCERTAINTY_POSE=0  →  disabled (default, fixed rot/trans weights)
+# USE_UNCERTAINTY_POSE=1  →  learn log-variance scalars for rot and trans
+USE_UNCERTAINTY_POSE="${USE_UNCERTAINTY_POSE:-0}"
+
 # =============================================================================
 # DERIVED PATHS
 # =============================================================================
@@ -107,6 +112,9 @@ elif [ "$PPS_ENABLED" = "1" ]; then
     S2_LOG_NAME="stage2_pps"
 else
     S2_LOG_NAME="stage2"
+fi
+if [ "$USE_UNCERTAINTY_POSE" = "1" ]; then
+    S2_LOG_NAME="${S2_LOG_NAME}_uncertainty"
 fi
 
 SKIP_STAGE1="${SKIP_STAGE1:-0}"
@@ -238,6 +246,11 @@ run_stage2() {
     else
         echo "  PPS:         OFF"
     fi
+    if [ "$USE_UNCERTAINTY_POSE" = "1" ]; then
+        echo "  UncertPose:  ON  (Kendall & Cipolla learnable rot/trans scales)"
+    else
+        echo "  UncertPose:  OFF"
+    fi
     if [ "$USE_SPECULAR_NET" = "1" ] && [ "$PPS_ENABLED" = "1" ]; then
         echo "  Ablation:    D  [SpecularNet + PPS]"
     elif [ "$USE_SPECULAR_NET" = "1" ]; then
@@ -254,7 +267,7 @@ run_stage2() {
         exit 1
     fi
 
-    # Build optional SpecularNet flags
+    # Build optional flag arrays
     SPECULAR_ARGS=""
     if [ "$USE_SPECULAR_NET" = "1" ]; then
         SPECULAR_ARGS="--use_specular_net --specular_loss_weight $SPECULAR_LOSS_WEIGHT --specular_threshold $SPECULAR_THRESHOLD"
@@ -264,6 +277,10 @@ run_stage2() {
         --pps_self_weight "$PPS_SELF_WEIGHT"
         --pps_light_baseline_mm "$PPS_LIGHT_BASELINE_MM"
     )
+    UNCERTAINTY_POSE_ARGS=""
+    if [ "$USE_UNCERTAINTY_POSE" = "1" ]; then
+        UNCERTAINTY_POSE_ARGS="--use_uncertainty_pose"
+    fi
 
     CUDA_VISIBLE_DEVICES=$GPU uv run python train.py --mode c3vdv2_stage2 \
         --dataset             c3vdv2 \
@@ -291,7 +308,8 @@ run_stage2() {
         "${HF_ARGS[@]}" \
         "${C3VDV2_ARGS[@]}" \
         "${PPS_ARGS[@]}" \
-        $SPECULAR_ARGS
+        $SPECULAR_ARGS \
+        $UNCERTAINTY_POSE_ARGS
 
     log "Stage 2 complete."
     echo "  Final weights: ${LOG_DIR}/${S2_LOG_NAME}/models/weights_$((S2_EPOCHS - 1))/"

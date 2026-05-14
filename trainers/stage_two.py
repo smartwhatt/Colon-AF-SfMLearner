@@ -13,9 +13,19 @@ The frozen position net provides reliable registrations which serve as:
 from __future__ import absolute_import, division, print_function
 
 import torch
+import torch.nn as nn
 import networks
 
 import torch.nn.functional as F
+
+
+class PoseUncertaintyScales(nn.Module):
+    """Learnable log-variance scalars for uncertainty-weighted pose loss (Kendall & Cipolla, CVPR 2017)."""
+
+    def __init__(self):
+        super().__init__()
+        self.log_s_rot = nn.Parameter(torch.zeros(1))
+        self.log_s_trans = nn.Parameter(torch.zeros(1))
 from layers import get_smooth_loss, get_smooth_bright
 from .base import BaseTrainer
 
@@ -91,6 +101,10 @@ class StageTwoTrainer(BaseTrainer):
                 self.models["encoder"].num_ch_enc, self.opt.scales
             ).to(self.device)
             self.parameters_to_train += list(self.models["specular"].parameters())
+
+        if getattr(self.opt, "use_uncertainty_pose", False):
+            self.models["pose_uncertainty"] = PoseUncertaintyScales().to(self.device)
+            self.parameters_to_train += list(self.models["pose_uncertainty"].parameters())
 
     def load_model(self):
         """Load frozen position weights and optional trainable Stage 2 weights."""
