@@ -89,25 +89,34 @@ def pose_loss(
     trans_weight: float = 1.0,
     log_s_rot: torch.Tensor = None,
     log_s_trans: torch.Tensor = None,
+    ema_rot: torch.Tensor = None,
+    ema_trans: torch.Tensor = None,
 ) -> torch.Tensor:
     """
     Supervised pose loss: L2 on axis-angle rotation + L2 on translation.
 
-    When log_s_rot and log_s_trans are provided (learnable scalars), uses the
-    uncertainty-weighted formulation from Kendall & Cipolla (CVPR 2017):
-        L = ||r_err||² * exp(-log_s_rot)  + log_s_rot
-          + ||t_err||² * exp(-log_s_trans) + log_s_trans
-    The log-regularisation terms prevent the scalars from collapsing to -inf.
+    When log_s_rot and log_s_trans are provided, uses the EMA-normalised
+    uncertainty-weighted formulation:
+        rot_n  = ||r_err||² / ema_rot
+        trn_n  = ||t_err||² / ema_trans
+        L = rot_n * exp(-log_s_rot)  + log_s_rot
+          + trn_n * exp(-log_s_trans) + log_s_trans
+
+    Division by the EMA keeps the effective loss near O(1), so the scalars
+    converge from their zero init in a handful of steps instead of drifting
+    deeply negative.
 
     Args:
         pred_axang:  (B, 3) predicted axis-angle from PoseNet
         pred_trans:  (B, 3) predicted translation from PoseNet
         gt_axang:    (B, 3) ground-truth axis-angle from C3VDv2 pose.txt
         gt_trans:    (B, 3) ground-truth translation in metres
-        rot_weight:  scalar weight for rotation term (used when log_s_rot is None)
-        trans_weight: scalar weight for translation term (used when log_s_trans is None)
+        rot_weight:  scalar weight for rotation (used when log_s_rot is None)
+        trans_weight: scalar weight for translation (used when log_s_trans is None)
         log_s_rot:   learnable log-variance for rotation (1,) tensor; None → fixed weights
         log_s_trans: learnable log-variance for translation (1,) tensor; None → fixed weights
+        ema_rot:     running-mean of ||r_err||² (1,) tensor; None → no normalisation
+        ema_trans:   running-mean of ||t_err||² (1,) tensor; None → no normalisation
     Returns:
         Scalar loss.
     """
@@ -116,6 +125,10 @@ def pose_loss(
     if log_s_rot is not None and log_s_trans is not None:
         s_r = log_s_rot.squeeze()
         s_t = log_s_trans.squeeze()
+        if ema_rot is not None:
+            rot_loss = rot_loss / ema_rot.squeeze().clamp(min=1e-8)
+        if ema_trans is not None:
+            trans_loss = trans_loss / ema_trans.squeeze().clamp(min=1e-8)
         return (
             rot_loss * torch.exp(-s_r) + s_r
             + trans_loss * torch.exp(-s_t) + s_t

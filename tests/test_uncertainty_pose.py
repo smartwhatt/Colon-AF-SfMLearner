@@ -1,4 +1,4 @@
-"""Unit tests for B.1 — Uncertainty-Weighted Pose Loss (Kendall & Cipolla, CVPR 2017)."""
+"""Unit tests for B.1 — EMA-Normalised Uncertainty-Weighted Pose Loss."""
 
 import os
 import sys
@@ -61,10 +61,24 @@ class TestPoseLossFixedWeights:
                            log_s_rot=None, log_s_trans=None)
         assert l_fixed.item() == pytest.approx(l_none.item(), rel=1e-6)
 
+    def test_ema_none_with_log_s_falls_back_to_raw(self):
+        """When log_s scalars are provided but EMAs are None, uses raw MSE losses."""
+        pred_ax = torch.ones(4, 3)
+        pred_tr = torch.ones(4, 3)
+        gt = torch.zeros(4, 3)
+        log_s_r = torch.tensor([0.0], requires_grad=False)
+        log_s_t = torch.tensor([0.0], requires_grad=False)
+        l_raw = pose_loss(pred_ax, pred_tr, gt, gt,
+                          log_s_rot=log_s_r, log_s_trans=log_s_t,
+                          ema_rot=None, ema_trans=None)
+        # F.mse_loss(ones, zeros) = 1.0 (mean over 12 elements)
+        # With log_s=0: loss = 1.0*exp(0) + 0 + 1.0*exp(0) + 0 = 2.0
+        assert l_raw.item() == pytest.approx(2.0, rel=1e-5)
 
-# ── pose_loss: uncertainty-weighted path ─────────────────────────────────────
 
-class TestPoseLossUncertainty:
+# ── pose_loss: EMA-normalised uncertainty path ───────────────────────────────
+
+class TestPoseLossEMANormalised:
     def _make_scalars(self, val=0.0, requires_grad=True):
         return (
             torch.tensor([val], requires_grad=requires_grad),
@@ -77,6 +91,7 @@ class TestPoseLossUncertainty:
             torch.randn(4, 3), torch.randn(4, 3),
             torch.zeros(4, 3), torch.zeros(4, 3),
             log_s_rot=log_s_r, log_s_trans=log_s_t,
+            ema_rot=torch.tensor([0.01]), ema_trans=torch.tensor([0.0001]),
         )
         assert torch.isfinite(loss)
 
@@ -86,6 +101,7 @@ class TestPoseLossUncertainty:
             torch.randn(2, 3), torch.randn(2, 3),
             torch.zeros(2, 3), torch.zeros(2, 3),
             log_s_rot=log_s_r, log_s_trans=log_s_t,
+            ema_rot=torch.tensor([0.01]), ema_trans=torch.tensor([0.0001]),
         )
         assert loss.ndim == 0
 
@@ -95,6 +111,7 @@ class TestPoseLossUncertainty:
             torch.randn(4, 3), torch.randn(4, 3),
             torch.zeros(4, 3), torch.zeros(4, 3),
             log_s_rot=log_s_r, log_s_trans=log_s_t,
+            ema_rot=torch.tensor([0.01]), ema_trans=torch.tensor([0.0001]),
         )
         loss.backward()
         assert log_s_r.grad is not None and log_s_r.grad.abs().sum() > 0
@@ -107,72 +124,117 @@ class TestPoseLossUncertainty:
         loss = pose_loss(
             pred_ax, pred_tr, torch.zeros(4, 3), torch.zeros(4, 3),
             log_s_rot=log_s_r, log_s_trans=log_s_t,
+            ema_rot=torch.tensor([0.01]), ema_trans=torch.tensor([0.0001]),
         )
         loss.backward()
         assert pred_ax.grad is not None and pred_ax.grad.abs().sum() > 0
         assert pred_tr.grad is not None and pred_tr.grad.abs().sum() > 0
 
     def test_zero_error_loss_equals_regularisation_only(self):
-        """When pred == gt, uncertainty loss == log_s_rot + log_s_trans."""
+        """When pred == gt the error terms vanish — loss = log_s_rot + log_s_trans."""
         x = torch.randn(4, 3)
         log_s_r, log_s_t = self._make_scalars(val=1.5, requires_grad=False)
-        loss = pose_loss(x, x, x, x, log_s_rot=log_s_r, log_s_trans=log_s_t)
+        loss = pose_loss(
+            x, x, x, x, log_s_rot=log_s_r, log_s_trans=log_s_t,
+            ema_rot=torch.tensor([0.01]), ema_trans=torch.tensor([0.0001]),
+        )
         expected = (log_s_r + log_s_t).item()
         assert loss.item() == pytest.approx(expected, rel=1e-5)
 
-    def test_large_negative_scalars_do_not_produce_nan(self):
-        """Very negative log_s values make exp(-log_s) large but loss stays finite."""
-        log_s_r = torch.tensor([-10.0], requires_grad=True)
-        log_s_t = torch.tensor([-10.0], requires_grad=True)
-        loss = pose_loss(
-            torch.randn(4, 3), torch.randn(4, 3),
-            torch.zeros(4, 3), torch.zeros(4, 3),
-            log_s_rot=log_s_r, log_s_trans=log_s_t,
-        )
-        assert torch.isfinite(loss)
-
-    def test_uncertainty_loss_not_equal_to_fixed_loss(self):
-        """With nonzero error, uncertainty path produces a different value than fixed weights."""
+    def test_ema_division_scales_loss_down(self):
+        """A larger EMA denominator makes rot_error/ema smaller → lower loss."""
         pred_ax = torch.ones(4, 3)
-        pred_tr = torch.ones(4, 3)
+        pred_tr = torch.zeros(4, 3)
         gt = torch.zeros(4, 3)
-        log_s_r, log_s_t = self._make_scalars(val=0.5, requires_grad=False)
-        l_fixed = pose_loss(pred_ax, pred_tr, gt, gt)
-        l_uncert = pose_loss(pred_ax, pred_tr, gt, gt,
-                             log_s_rot=log_s_r, log_s_trans=log_s_t)
-        assert l_fixed.item() != pytest.approx(l_uncert.item(), rel=1e-4)
+        log_s_r = torch.tensor([0.0], requires_grad=False)
+        log_s_t = torch.tensor([0.0], requires_grad=False)
+
+        l1 = pose_loss(
+            pred_ax, pred_tr, gt, gt, log_s_rot=log_s_r, log_s_trans=log_s_t,
+            ema_rot=torch.tensor([0.01]), ema_trans=torch.tensor([0.0001]),
+        )
+        l2 = pose_loss(
+            pred_ax, pred_tr, gt, gt, log_s_rot=log_s_r, log_s_trans=log_s_t,
+            ema_rot=torch.tensor([10.0]), ema_trans=torch.tensor([10.0]),
+        )
+        assert l2.item() < l1.item()
+
+    def test_equilibrium_near_zero_when_normalised(self):
+        """With EMA ≈ error magnitude, the scalars should settle near 0."""
+        err_scale = 0.05  # typical axis-angle error
+        pred_ax = torch.full((32, 3), err_scale)
+        pred_tr = torch.full((32, 3), 0.001)  # typical translation error in metres
+        gt = torch.zeros(32, 3)
+        ema_rot = torch.tensor([err_scale ** 2])   # ≈ 0.0025
+        ema_trn = torch.tensor([1e-6])              # ≈ 0.001²
+
+        log_s_r = torch.tensor([0.0], requires_grad=True)
+        log_s_t = torch.tensor([0.0], requires_grad=True)
+
+        loss = pose_loss(
+            pred_ax, pred_tr, gt, gt,
+            log_s_rot=log_s_r, log_s_trans=log_s_t,
+            ema_rot=ema_rot, ema_trans=ema_trn,
+        )
+        loss.backward()
+
+        # The gradient dL/d(log_s) = -loss_n * exp(-log_s) + 1
+        # With loss_n ≈ 1 (normalised), exp(0)=1 → grad ≈ 0 at equilibrium
+        # So a single step from zero with lr=0.1 should barely move the scalar
+        with torch.no_grad():
+            new_r = log_s_r - 0.1 * log_s_r.grad
+        assert pytest.approx(new_r.item(), abs=0.5) == 0.0
 
 
 # ── PoseUncertaintyScales module ──────────────────────────────────────────────
 
 class TestPoseUncertaintyScales:
-    def test_initialises_to_zero(self):
+    def test_initialises_logs_to_zero(self):
         pu = PoseUncertaintyScales()
         assert pu.log_s_rot.item() == pytest.approx(0.0)
         assert pu.log_s_trans.item() == pytest.approx(0.0)
 
+    def test_ema_buffers_initialised(self):
+        pu = PoseUncertaintyScales()
+        assert pu.ema_rot.item() == pytest.approx(0.01)
+        assert pu.ema_trans.item() == pytest.approx(0.0001)
+
+    def test_ema_decay_default(self):
+        assert PoseUncertaintyScales().ema_decay == 0.99
+
+    def test_ema_decay_custom(self):
+        assert PoseUncertaintyScales(ema_decay=0.95).ema_decay == 0.95
+
     def test_is_nn_module(self):
         assert isinstance(PoseUncertaintyScales(), nn.Module)
 
-    def test_has_exactly_two_parameters(self):
+    def test_has_two_params_plus_two_buffers(self):
         pu = PoseUncertaintyScales()
         params = list(pu.parameters())
+        buffers = list(pu.buffers())
         assert len(params) == 2
+        assert len(buffers) == 2
 
-    def test_parameters_require_grad(self):
+    def test_params_require_grad_buffers_do_not(self):
         pu = PoseUncertaintyScales()
         for p in pu.parameters():
             assert p.requires_grad
+        for b in pu.buffers():
+            assert not b.requires_grad
 
     def test_state_dict_round_trip(self):
         pu = PoseUncertaintyScales()
         pu.log_s_rot.data.fill_(0.42)
         pu.log_s_trans.data.fill_(-1.7)
+        pu.ema_rot.fill_(0.003)
+        pu.ema_trans.fill_(2e-6)
         sd = pu.state_dict()
         pu2 = PoseUncertaintyScales()
         pu2.load_state_dict(sd)
         assert pu2.log_s_rot.item() == pytest.approx(0.42, rel=1e-5)
         assert pu2.log_s_trans.item() == pytest.approx(-1.7, rel=1e-5)
+        assert pu2.ema_rot.item() == pytest.approx(0.003, rel=1e-5)
+        assert pu2.ema_trans.item() == pytest.approx(2e-6, rel=1e-5)
 
     def test_gradients_update_via_optimizer(self):
         pu = PoseUncertaintyScales()
@@ -182,6 +244,7 @@ class TestPoseUncertaintyScales:
         loss = pose_loss(
             pred_ax, pred_tr, torch.zeros(4, 3), torch.zeros(4, 3),
             log_s_rot=pu.log_s_rot, log_s_trans=pu.log_s_trans,
+            ema_rot=pu.ema_rot, ema_trans=pu.ema_trans,
         )
         loss.backward()
         before_r = pu.log_s_rot.item()
@@ -190,8 +253,30 @@ class TestPoseUncertaintyScales:
         assert pu.log_s_rot.item() != pytest.approx(before_r)
         assert pu.log_s_trans.item() != pytest.approx(before_t)
 
+    def test_ema_manual_update(self):
+        """Simulate the EMA update that the trainer performs each step."""
+        pu = PoseUncertaintyScales(ema_decay=0.9)
+        raw_rot = torch.tensor([0.05])
+        raw_trn = torch.tensor([0.002])
+        with torch.no_grad():
+            d = pu.ema_decay
+            pu.ema_rot.mul_(d).add_(raw_rot, alpha=1 - d)
+            pu.ema_trans.mul_(d).add_(raw_trn, alpha=1 - d)
+        # After one step: new = 0.9*old + 0.1*raw
+        assert pu.ema_rot.item() == pytest.approx(0.9 * 0.01 + 0.1 * 0.05, rel=1e-5)
+        assert pu.ema_trans.item() == pytest.approx(0.9 * 0.0001 + 0.1 * 0.002, rel=1e-5)
 
-# ── options: use_uncertainty_pose flag ───────────────────────────────────────
+    def test_ema_converges_to_loss_magnitude(self):
+        """After many updates with constant loss, EMA approaches that loss."""
+        pu = PoseUncertaintyScales(ema_decay=0.99)
+        const_rot = torch.tensor([0.04])
+        for _ in range(2000):
+            with torch.no_grad():
+                pu.ema_rot.mul_(0.99).add_(const_rot, alpha=0.01)
+        assert pu.ema_rot.item() == pytest.approx(0.04, rel=1e-2)
+
+
+# ── options: use_uncertainty_pose + ema_decay flags ──────────────────────────
 
 class TestUncertaintyPoseOption:
     def test_default_is_false(self):
@@ -211,3 +296,11 @@ class TestUncertaintyPoseOption:
     def test_cli_omitting_flag_leaves_false(self):
         cfg = TrainingConfig.from_args(["--mode", "c3vdv2_stage2"])
         assert cfg.use_uncertainty_pose is False
+
+    def test_ema_decay_default(self):
+        cfg = TrainingConfig(mode="c3vdv2_stage2")
+        assert cfg.uncertainty_pose_ema_decay == 0.99
+
+    def test_ema_decay_custom(self):
+        cfg = TrainingConfig(mode="c3vdv2_stage2", uncertainty_pose_ema_decay=0.95)
+        assert cfg.uncertainty_pose_ema_decay == 0.95

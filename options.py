@@ -214,6 +214,10 @@ class TrainingConfig(BaseModel):
         default=False,
         description="learn rotation/translation uncertainty scales in supervised pose loss (Kendall & Cipolla 2017)",
     )
+    uncertainty_pose_ema_decay: float = Field(
+        default=0.99,
+        description="EMA decay for normalising pose-error magnitudes before uncertainty weighting",
+    )
 
     # ── Logging ───────────────────────────────────────────────────────────────
     log_frequency: int = Field(default=200, description="batches between TensorBoard log writes")

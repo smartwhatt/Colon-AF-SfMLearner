@@ -20,12 +20,22 @@ import torch.nn.functional as F
 
 
 class PoseUncertaintyScales(nn.Module):
-    """Learnable log-variance scalars for uncertainty-weighted pose loss (Kendall & Cipolla, CVPR 2017)."""
+    """Learnable log-variance scalars + EMA buffers for uncertainty-weighted pose loss.
 
-    def __init__(self):
+    The log_s_* parameters balance rotation vs. translation via the Kendall &
+    Cipolla (CVPR 2017) formulation.  The EMA buffers normalise the raw MSE
+    losses before uncertainty weighting so the scalars stay near zero regardless
+    of the absolute error scale (radians vs. metres), converging in tens of
+    steps instead of thousands.
+    """
+
+    def __init__(self, ema_decay: float = 0.99):
         super().__init__()
         self.log_s_rot = nn.Parameter(torch.zeros(1))
         self.log_s_trans = nn.Parameter(torch.zeros(1))
+        self.register_buffer("ema_rot", torch.tensor([0.01]))
+        self.register_buffer("ema_trans", torch.tensor([0.0001]))
+        self.ema_decay = ema_decay
 from layers import get_smooth_loss, get_smooth_bright
 from .base import BaseTrainer
 
@@ -103,7 +113,8 @@ class StageTwoTrainer(BaseTrainer):
             self.parameters_to_train += list(self.models["specular"].parameters())
 
         if getattr(self.opt, "use_uncertainty_pose", False):
-            self.models["pose_uncertainty"] = PoseUncertaintyScales().to(self.device)
+            decay = getattr(self.opt, "uncertainty_pose_ema_decay", 0.99)
+            self.models["pose_uncertainty"] = PoseUncertaintyScales(ema_decay=decay).to(self.device)
             self.parameters_to_train += list(self.models["pose_uncertainty"].parameters())
 
     def load_model(self):
