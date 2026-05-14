@@ -624,9 +624,8 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             -1: ("axang_curr2prev", "trans_curr2prev"),
              1: ("axang_curr2next", "trans_curr2next"),
         }
-        pu = self.models.get("pose_uncertainty")
-        log_s_rot   = pu.log_s_rot   if pu is not None else None
-        log_s_trans = pu.log_s_trans if pu is not None else None
+        pb = self.models.get("pose_balance")
+        balance = pb.balance if pb is not None else None
 
         total_pose = 0.0
         n = 0
@@ -638,23 +637,8 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
                 continue
             pred_ax = outputs[("axisangle", 0, f_i)].squeeze(1)
             pred_tr = outputs[("translation", 0, f_i)].squeeze(1)
-
-            # Update EMAs from raw MSE — no-grad so the scalars don't see this path
-            if pu is not None:
-                raw_rot = F.mse_loss(pred_ax, inputs[axk])
-                raw_trn = F.mse_loss(pred_tr, inputs[trk])
-                with torch.no_grad():
-                    d = pu.ema_decay
-                    pu.ema_rot.mul_(d).add_(raw_rot.detach(), alpha=1 - d)
-                    pu.ema_trans.mul_(d).add_(raw_trn.detach(), alpha=1 - d)
-
-            ema_rot   = pu.ema_rot.detach()   if pu is not None else None
-            ema_trans = pu.ema_trans.detach() if pu is not None else None
-            total_pose += pose_loss(
-                pred_ax, pred_tr, inputs[axk], inputs[trk],
-                log_s_rot=log_s_rot, log_s_trans=log_s_trans,
-                ema_rot=ema_rot, ema_trans=ema_trans,
-            )
+            total_pose += pose_loss(pred_ax, pred_tr, inputs[axk], inputs[trk],
+                                    balance=balance)
             n += 1
         if n == 0:
             return None
@@ -732,12 +716,9 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             losses["loss_weighted/pose_supervised"] = weighted_pose
             losses["loss"] = losses["loss"] + weighted_pose
 
-        # Log uncertainty scales + EMA values when enabled
-        pu = getattr(self, "models", {}).get("pose_uncertainty")
-        if pu is not None:
-            losses["uncertainty/log_s_rot"] = pu.log_s_rot.detach()
-            losses["uncertainty/log_s_trans"] = pu.log_s_trans.detach()
-            losses["uncertainty/ema_rot"] = pu.ema_rot.detach()
-            losses["uncertainty/ema_trans"] = pu.ema_trans.detach()
+        # Log balance scalar when enabled
+        pb = getattr(self, "models", {}).get("pose_balance")
+        if pb is not None:
+            losses["pose_balance/alpha"] = torch.sigmoid(pb.balance).detach()
 
         return losses

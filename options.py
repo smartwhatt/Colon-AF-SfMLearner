@@ -212,11 +212,7 @@ class TrainingConfig(BaseModel):
     # ── Uncertainty-weighted pose loss (B.1, Kendall & Cipolla CVPR 2017) ────────
     use_uncertainty_pose: bool = Field(
         default=False,
-        description="learn rotation/translation uncertainty scales in supervised pose loss (Kendall & Cipolla 2017)",
-    )
-    uncertainty_pose_ema_decay: float = Field(
-        default=0.99,
-        description="EMA decay for normalising pose-error magnitudes before uncertainty weighting",
+        description="learn a sigmoid-bounded balance scalar for rot vs. trans in supervised pose loss",
     )
 
     # ── Logging ───────────────────────────────────────────────────────────────

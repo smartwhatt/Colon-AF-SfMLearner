@@ -87,52 +87,36 @@ def pose_loss(
     gt_trans: torch.Tensor,
     rot_weight: float = 1.0,
     trans_weight: float = 1.0,
-    log_s_rot: torch.Tensor = None,
-    log_s_trans: torch.Tensor = None,
-    ema_rot: torch.Tensor = None,
-    ema_trans: torch.Tensor = None,
+    balance: torch.Tensor = None,
 ) -> torch.Tensor:
     """
     Supervised pose loss: L2 on axis-angle rotation + L2 on translation.
 
-    When log_s_rot and log_s_trans are provided, uses the EMA-normalised
-    uncertainty-weighted formulation:
-        rot_n  = ||r_err||² / ema_rot
-        trn_n  = ||t_err||² / ema_trans
-        L = rot_n * exp(-log_s_rot)  + log_s_rot
-          + trn_n * exp(-log_s_trans) + log_s_trans
+    When balance is provided (learnable scalar), the loss uses a sigmoid-bounded
+    interpolation between rotation and translation:
+        α  = σ(balance)         ∈ (0, 1)
+        L  = α · ||r_err||²  +  (1 − α) · ||t_err||²
 
-    Division by the EMA keeps the effective loss near O(1), so the scalars
-    converge from their zero init in a handful of steps instead of drifting
-    deeply negative.
+    balance = 0 → α = 0.5 (equal weighting). The gradient pushes α toward
+    whichever component has larger raw MSE. Bounded and one-parameter — no
+    EMA, no log/exp, no instability. Converges in tens of steps.
 
     Args:
         pred_axang:  (B, 3) predicted axis-angle from PoseNet
         pred_trans:  (B, 3) predicted translation from PoseNet
         gt_axang:    (B, 3) ground-truth axis-angle from C3VDv2 pose.txt
         gt_trans:    (B, 3) ground-truth translation in metres
-        rot_weight:  scalar weight for rotation (used when log_s_rot is None)
-        trans_weight: scalar weight for translation (used when log_s_trans is None)
-        log_s_rot:   learnable log-variance for rotation (1,) tensor; None → fixed weights
-        log_s_trans: learnable log-variance for translation (1,) tensor; None → fixed weights
-        ema_rot:     running-mean of ||r_err||² (1,) tensor; None → no normalisation
-        ema_trans:   running-mean of ||t_err||² (1,) tensor; None → no normalisation
+        rot_weight:  scalar weight for rotation (used when balance is None)
+        trans_weight: scalar weight for translation (used when balance is None)
+        balance:     learnable raw logit (1,) tensor; None → fixed weights
     Returns:
         Scalar loss.
     """
     rot_loss = F.mse_loss(pred_axang, gt_axang)
     trans_loss = F.mse_loss(pred_trans, gt_trans)
-    if log_s_rot is not None and log_s_trans is not None:
-        s_r = log_s_rot.squeeze()
-        s_t = log_s_trans.squeeze()
-        if ema_rot is not None:
-            rot_loss = rot_loss / ema_rot.squeeze().clamp(min=1e-8)
-        if ema_trans is not None:
-            trans_loss = trans_loss / ema_trans.squeeze().clamp(min=1e-8)
-        return (
-            rot_loss * torch.exp(-s_r) + s_r
-            + trans_loss * torch.exp(-s_t) + s_t
-        )
+    if balance is not None:
+        alpha = torch.sigmoid(balance.squeeze())
+        return alpha * rot_loss + (1.0 - alpha) * trans_loss
     return rot_weight * rot_loss + trans_weight * trans_loss
 
 

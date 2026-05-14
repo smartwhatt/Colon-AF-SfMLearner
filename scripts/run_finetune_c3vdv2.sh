@@ -87,9 +87,9 @@ PPS_SUP_WEIGHT="${PPS_SUP_WEIGHT:-0.0}"
 PPS_SELF_WEIGHT="${PPS_SELF_WEIGHT:-0.0}"
 PPS_LIGHT_BASELINE_MM="${PPS_LIGHT_BASELINE_MM:-3.0}"
 
-# ── Uncertainty-weighted pose loss (B.1, Kendall & Cipolla CVPR 2017) ─────────
+# ── Pose balance scalar (B.1, Kendall & Cipolla CVPR 2017) ───────────────────
 # USE_UNCERTAINTY_POSE=0  →  disabled (default, fixed rot/trans weights)
-# USE_UNCERTAINTY_POSE=1  →  learn log-variance scalars for rot and trans
+# USE_UNCERTAINTY_POSE=1  →  learn a sigmoid-bounded balance scalar
 USE_UNCERTAINTY_POSE="${USE_UNCERTAINTY_POSE:-0}"
 
 # =============================================================================
@@ -247,9 +247,9 @@ run_stage2() {
         echo "  PPS:         OFF"
     fi
     if [ "$USE_UNCERTAINTY_POSE" = "1" ]; then
-        echo "  UncertPose:  ON  (Kendall & Cipolla learnable rot/trans scales)"
+        echo "  PoseBalance: ON  (α = σ(balance), init α = 0.5)"
     else
-        echo "  UncertPose:  OFF"
+        echo "  PoseBalance: OFF"
     fi
     if [ "$USE_SPECULAR_NET" = "1" ] && [ "$PPS_ENABLED" = "1" ]; then
         echo "  Ablation:    D  [SpecularNet + PPS]"
@@ -267,7 +267,7 @@ run_stage2() {
         exit 1
     fi
 
-    # Build optional flag arrays
+    # Build optional SpecularNet flags
     SPECULAR_ARGS=""
     if [ "$USE_SPECULAR_NET" = "1" ]; then
         SPECULAR_ARGS="--use_specular_net --specular_loss_weight $SPECULAR_LOSS_WEIGHT --specular_threshold $SPECULAR_THRESHOLD"
