@@ -10,9 +10,10 @@
 #   Stage 2 — Fine-tune depth + pose + transform with frozen Stage 1 weights.
 #             Supervised depth and pose losses ramp high → low.
 #
-# SpecularNet ablations (Phase 1 PR 1):
+# SpecularNet/PPS ablations (Phase 1):
 #   USE_SPECULAR_NET=0  →  Ablation A: baseline (default)
 #   USE_SPECULAR_NET=1  →  Ablation B: specular gating only (no PPS)
+#   PPS_SUP_WEIGHT>0    →  Ablation C: PPS-only, or D with USE_SPECULAR_NET=1
 #
 # Usage:
 #   bash scripts/run_finetune_c3vdv2.sh
@@ -79,15 +80,31 @@ USE_SPECULAR_NET="${USE_SPECULAR_NET:-0}"
 SPECULAR_LOSS_WEIGHT="${SPECULAR_LOSS_WEIGHT:-0.05}"
 SPECULAR_THRESHOLD="${SPECULAR_THRESHOLD:-0.98}"
 
+# ── PPS loss (Phase 1 PR 2) ───────────────────────────────────────────────────
+# PPS_SUP_WEIGHT=0     →  disabled (default)
+# PPS_SUP_WEIGHT>0     →  supervised PPS shading consistency on C3VDv2
+PPS_SUP_WEIGHT="${PPS_SUP_WEIGHT:-0.0}"
+PPS_SELF_WEIGHT="${PPS_SELF_WEIGHT:-0.0}"
+PPS_LIGHT_BASELINE_MM="${PPS_LIGHT_BASELINE_MM:-3.0}"
+
 # =============================================================================
 # DERIVED PATHS
 # =============================================================================
 
 S1_LOG_NAME="stage1"
 
+case "$PPS_SUP_WEIGHT" in
+    0|0.0|0.00|0.000|0.0000) PPS_ENABLED=0 ;;
+    *) PPS_ENABLED=1 ;;
+esac
+
 # Stage 2 log name encodes the ablation variant for clean separation in TensorBoard
-if [ "$USE_SPECULAR_NET" = "1" ]; then
+if [ "$USE_SPECULAR_NET" = "1" ] && [ "$PPS_ENABLED" = "1" ]; then
+    S2_LOG_NAME="stage2_specular_pps"
+elif [ "$USE_SPECULAR_NET" = "1" ]; then
     S2_LOG_NAME="stage2_specular"
+elif [ "$PPS_ENABLED" = "1" ]; then
+    S2_LOG_NAME="stage2_pps"
 else
     S2_LOG_NAME="stage2"
 fi
@@ -213,9 +230,21 @@ run_stage2() {
 
     if [ "$USE_SPECULAR_NET" = "1" ]; then
         echo "  SpecularNet: ON  (weight=$SPECULAR_LOSS_WEIGHT  threshold=$SPECULAR_THRESHOLD)"
-        echo "  Ablation:    B  [SpecularNet gating only — no PPS]"
     else
         echo "  SpecularNet: OFF"
+    fi
+    if [ "$PPS_ENABLED" = "1" ]; then
+        echo "  PPS:         ON  (sup_weight=$PPS_SUP_WEIGHT  baseline_mm=$PPS_LIGHT_BASELINE_MM)"
+    else
+        echo "  PPS:         OFF"
+    fi
+    if [ "$USE_SPECULAR_NET" = "1" ] && [ "$PPS_ENABLED" = "1" ]; then
+        echo "  Ablation:    D  [SpecularNet + PPS]"
+    elif [ "$USE_SPECULAR_NET" = "1" ]; then
+        echo "  Ablation:    B  [SpecularNet gating only]"
+    elif [ "$PPS_ENABLED" = "1" ]; then
+        echo "  Ablation:    C  [PPS only]"
+    else
         echo "  Ablation:    A  [baseline]"
     fi
 
@@ -230,6 +259,11 @@ run_stage2() {
     if [ "$USE_SPECULAR_NET" = "1" ]; then
         SPECULAR_ARGS="--use_specular_net --specular_loss_weight $SPECULAR_LOSS_WEIGHT --specular_threshold $SPECULAR_THRESHOLD"
     fi
+    PPS_ARGS=(
+        --pps_sup_weight "$PPS_SUP_WEIGHT"
+        --pps_self_weight "$PPS_SELF_WEIGHT"
+        --pps_light_baseline_mm "$PPS_LIGHT_BASELINE_MM"
+    )
 
     CUDA_VISIBLE_DEVICES=$GPU uv run python train.py --mode c3vdv2_stage2 \
         --dataset             c3vdv2 \
@@ -256,6 +290,7 @@ run_stage2() {
         --ramp_epochs         "$RAMP_EPOCHS" \
         "${HF_ARGS[@]}" \
         "${C3VDV2_ARGS[@]}" \
+        "${PPS_ARGS[@]}" \
         $SPECULAR_ARGS
 
     log "Stage 2 complete."

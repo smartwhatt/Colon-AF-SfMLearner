@@ -19,6 +19,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from layers import compute_pps_map
+
 
 # ---------------------------------------------------------------------------
 # 1. Supervised depth loss
@@ -200,6 +202,60 @@ def specular_bce_loss(
         n = valid_mask.sum().clamp(min=1)
         return (loss_map * valid_mask).sum() / n
     return loss_map.mean()
+
+
+# ---------------------------------------------------------------------------
+# 5. PPSNet-style supervised shading loss
+# ---------------------------------------------------------------------------
+
+
+def _masked_mean_per_image(value: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    denom = mask.flatten(1).sum(dim=1).clamp(min=1).view(-1, 1, 1, 1)
+    return (value * mask).flatten(1).sum(dim=1).view(-1, 1, 1, 1) / denom
+
+
+def pps_supervised_loss(
+    pred_depth: torch.Tensor,
+    gt_depth: torch.Tensor,
+    inv_K: torch.Tensor,
+    valid_mask: torch.Tensor = None,
+    light_position: torch.Tensor = None,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Supervised PPS consistency loss between predicted and GT depth.
+
+    PPS maps are normalized per image over valid pixels so this term acts as a
+    geometry regularizer rather than an absolute exposure or scale solver.
+    """
+    if valid_mask is None:
+        valid_mask = (gt_depth > 1e-3).float()
+    else:
+        valid_mask = valid_mask.float()
+    if valid_mask.shape[2:] != pred_depth.shape[2:]:
+        valid_mask = F.interpolate(
+            valid_mask, size=pred_depth.shape[2:], mode="nearest"
+        )
+    if gt_depth.shape[2:] != pred_depth.shape[2:]:
+        gt_depth = F.interpolate(
+            gt_depth, size=pred_depth.shape[2:], mode="nearest"
+        )
+
+    if valid_mask.sum().detach().item() <= 0:
+        return pred_depth.sum() * 0.0
+    if light_position is None:
+        light_position = pred_depth.new_tensor([0.0015, 0.0, 0.0])
+
+    pps_pred = compute_pps_map(pred_depth.clamp(min=eps), inv_K, light_position)
+    with torch.no_grad():
+        pps_gt = compute_pps_map(gt_depth.clamp(min=eps), inv_K, light_position)
+
+    mean_pred = _masked_mean_per_image(pps_pred, valid_mask).clamp(min=eps)
+    mean_gt = _masked_mean_per_image(pps_gt, valid_mask).clamp(min=eps)
+    pps_pred = pps_pred / mean_pred
+    pps_gt = pps_gt / mean_gt
+
+    loss_map = F.smooth_l1_loss(pps_pred, pps_gt, reduction="none")
+    return (loss_map * valid_mask).sum() / valid_mask.sum().clamp(min=1)
 
 
 # ---------------------------------------------------------------------------

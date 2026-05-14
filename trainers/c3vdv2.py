@@ -36,6 +36,7 @@ from .c3vdv2_losses import (
     pose_loss,
     compute_specular_pseudo_labels,
     specular_bce_loss,
+    pps_supervised_loss,
 )
 from .base import BaseTrainer
 from .stage_one import StageOneTrainer
@@ -654,6 +655,35 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             weighted_depth = self.w_depth * l_depth
             losses["loss_weighted/depth_supervised"] = weighted_depth
             losses["loss"] = losses["loss"] + weighted_depth
+
+            w_pps = getattr(self.opt, "pps_sup_weight", 0.0)
+            if w_pps > 0:
+                pps_mask = depth_mask
+                if getattr(self.opt, "use_specular_net", False) and (
+                    "specular", 0
+                ) in outputs:
+                    specular_valid = 1.0 - outputs[("specular", 0)].detach()
+                    if specular_valid.shape[2:] != pps_mask.shape[2:]:
+                        specular_valid = F.interpolate(
+                            specular_valid,
+                            size=pps_mask.shape[2:],
+                            mode="bilinear",
+                            align_corners=False,
+                        )
+                    pps_mask = pps_mask * specular_valid.clamp(0.0, 1.0)
+                baseline_m = getattr(self.opt, "pps_light_baseline_mm", 3.0) / 1000.0
+                light_position = pred_depth.new_tensor([baseline_m / 2.0, 0.0, 0.0])
+                l_pps = pps_supervised_loss(
+                    pred_depth,
+                    gt_depth,
+                    inputs[("inv_K", 0)],
+                    pps_mask,
+                    light_position,
+                )
+                losses["loss/pps_sup"] = l_pps
+                weighted_pps = w_pps * l_pps
+                losses["loss_weighted/pps_sup"] = weighted_pps
+                losses["loss"] = losses["loss"] + weighted_pps
 
         # Specular BCE weak supervision
         if getattr(self.opt, "use_specular_net", False) and ("specular", 0) in outputs:

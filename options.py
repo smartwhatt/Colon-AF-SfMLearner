@@ -195,6 +195,20 @@ class TrainingConfig(BaseModel):
         description="intensity threshold (0–1) above which pixels are treated as specular",
     )
 
+    # ── PPS loss (Phase 1 PR 2) ──────────────────────────────────────────────
+    pps_sup_weight: float = Field(
+        default=0.0,
+        description="weight for supervised PPS shading consistency on C3VDv2",
+    )
+    pps_self_weight: float = Field(
+        default=0.0,
+        description="reserved weight for self-supervised PPS consistency on real video",
+    )
+    pps_light_baseline_mm: float = Field(
+        default=3.0,
+        description="nominal endoscope light baseline in millimetres for PPS geometry",
+    )
+
     # ── Logging ───────────────────────────────────────────────────────────────
     log_frequency: int = Field(default=200, description="batches between TensorBoard log writes")
     save_frequency: int = Field(default=1, description="epochs between model saves")

@@ -266,6 +266,96 @@ def get_smooth_bright(transform, target, pred, occu_mask):
     return (grad_transform_x.sum() / mask_x.sum() + grad_transform_y.sum() / mask_y.sum())
 
 
+def _backproject_depth_to_points(depth, inv_K):
+    """Back-project a depth map to camera-coordinate 3D points."""
+    if depth.dim() != 4 or depth.size(1) != 1:
+        raise ValueError("depth must have shape (B, 1, H, W)")
+    if inv_K.dim() == 2:
+        inv_K = inv_K.unsqueeze(0)
+    if inv_K.dim() != 3 or inv_K.size(1) < 3 or inv_K.size(2) < 3:
+        raise ValueError("inv_K must have shape (B, 3, 3) or (B, 4, 4)")
+
+    batch, _, height, width = depth.shape
+    device = depth.device
+    dtype = depth.dtype
+    inv_K = inv_K.to(device=device, dtype=dtype)
+    if inv_K.size(0) == 1 and batch > 1:
+        inv_K = inv_K.expand(batch, -1, -1)
+    if inv_K.size(0) != batch:
+        raise ValueError("inv_K batch size must be 1 or match depth batch size")
+
+    ys, xs = torch.meshgrid(
+        torch.arange(height, device=device, dtype=dtype),
+        torch.arange(width, device=device, dtype=dtype),
+        indexing="ij",
+    )
+    pix = torch.stack([xs, ys, torch.ones_like(xs)], dim=0).view(1, 3, -1)
+    pix = pix.expand(batch, -1, -1)
+
+    rays = torch.matmul(inv_K[:, :3, :3], pix).view(batch, 3, height, width)
+    return rays * depth
+
+
+def compute_surface_normals_from_depth(depth, inv_K, eps=1e-7):
+    """Estimate camera-coordinate surface normals from a depth map.
+
+    Normals are oriented toward the camera under the repo's positive-z-forward
+    camera convention, so front-facing flat surfaces produce negative-z normals.
+    """
+    points = _backproject_depth_to_points(depth, inv_K)
+    dx = torch.zeros_like(points)
+    dy = torch.zeros_like(points)
+
+    if points.size(3) > 1:
+        dx[:, :, :, 1:-1] = points[:, :, :, 2:] - points[:, :, :, :-2]
+        dx[:, :, :, 0] = points[:, :, :, 1] - points[:, :, :, 0]
+        dx[:, :, :, -1] = points[:, :, :, -1] - points[:, :, :, -2]
+    if points.size(2) > 1:
+        dy[:, :, 1:-1, :] = points[:, :, 2:, :] - points[:, :, :-2, :]
+        dy[:, :, 0, :] = points[:, :, 1, :] - points[:, :, 0, :]
+        dy[:, :, -1, :] = points[:, :, -1, :] - points[:, :, -2, :]
+
+    normals = torch.cross(dy, dx, dim=1)
+    normals = F.normalize(normals, p=2, dim=1, eps=eps)
+
+    view_dir = F.normalize(-points, p=2, dim=1, eps=eps)
+    flip = (normals * view_dir).sum(dim=1, keepdim=True) < 0
+    return torch.where(flip, -normals, normals)
+
+
+def compute_pps_map(depth, inv_K, light_position, eps=1e-6):
+    """Compute a PPSNet-style per-pixel shading map.
+
+    Args:
+        depth: (B, 1, H, W) metric depth.
+        inv_K: (B, 3, 3) or (B, 4, 4) inverse intrinsics in pixel units.
+        light_position: (3,) or (B, 3), in the same metric units as depth.
+    """
+    points = _backproject_depth_to_points(depth, inv_K)
+    normals = compute_surface_normals_from_depth(depth, inv_K, eps=eps)
+
+    if not torch.is_tensor(light_position):
+        light_position = torch.as_tensor(light_position)
+    light_position = light_position.to(device=depth.device, dtype=depth.dtype)
+    if light_position.dim() == 1:
+        light_position = light_position.view(1, 3, 1, 1)
+    elif light_position.dim() == 2:
+        light_position = light_position.view(light_position.size(0), 3, 1, 1)
+    else:
+        raise ValueError("light_position must have shape (3,) or (B, 3)")
+    if light_position.size(0) == 1 and depth.size(0) > 1:
+        light_position = light_position.expand(depth.size(0), -1, -1, -1)
+    if light_position.size(0) != depth.size(0):
+        raise ValueError("light_position batch size must be 1 or match depth")
+
+    light_vec = light_position - points
+    distance = torch.linalg.norm(light_vec, dim=1, keepdim=True).clamp(min=eps)
+    light_dir = light_vec / distance
+    cosine = (normals * light_dir).sum(dim=1, keepdim=True).clamp(min=0.0)
+    pps = cosine / distance.pow(2).clamp(min=eps)
+    return torch.nan_to_num(pps, nan=0.0, posinf=1.0 / eps, neginf=0.0)
+
+
 def get_smooth_registration(position):
     
     """Computes the smoothness loss for a optical flow
@@ -684,4 +774,3 @@ class reduced_ransac(nn.Module):
         cv_f = torch.from_numpy(cv_f).float().to(match.get_device())
         
         return cv_f
-
