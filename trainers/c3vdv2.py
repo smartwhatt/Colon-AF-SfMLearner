@@ -624,6 +624,9 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             -1: ("axang_curr2prev", "trans_curr2prev"),
              1: ("axang_curr2next", "trans_curr2next"),
         }
+        pb = self.models.get("pose_balance")
+        balance = pb.balance if pb is not None else None
+
         total_pose = 0.0
         n = 0
         for f_i in self.opt.frame_ids[1:]:
@@ -634,7 +637,8 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
                 continue
             pred_ax = outputs[("axisangle", 0, f_i)].squeeze(1)
             pred_tr = outputs[("translation", 0, f_i)].squeeze(1)
-            total_pose += pose_loss(pred_ax, pred_tr, inputs[axk], inputs[trk])
+            total_pose += pose_loss(pred_ax, pred_tr, inputs[axk], inputs[trk],
+                                    balance=balance)
             n += 1
         if n == 0:
             return None
@@ -711,5 +715,10 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             weighted_pose = self.w_pose * l_pose
             losses["loss_weighted/pose_supervised"] = weighted_pose
             losses["loss"] = losses["loss"] + weighted_pose
+
+        # Log balance scalar when enabled
+        pb = getattr(self, "models", {}).get("pose_balance")
+        if pb is not None:
+            losses["pose_balance/alpha"] = torch.sigmoid(pb.balance).detach()
 
         return losses

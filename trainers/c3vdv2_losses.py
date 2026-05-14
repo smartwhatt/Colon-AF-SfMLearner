@@ -87,20 +87,36 @@ def pose_loss(
     gt_trans: torch.Tensor,
     rot_weight: float = 1.0,
     trans_weight: float = 1.0,
+    balance: torch.Tensor = None,
 ) -> torch.Tensor:
     """
     Supervised pose loss: L2 on axis-angle rotation + L2 on translation.
 
+    When balance is provided (learnable scalar), the loss uses a sigmoid-bounded
+    interpolation between rotation and translation:
+        α  = σ(balance)         ∈ (0, 1)
+        L  = α · ||r_err||²  +  (1 − α) · ||t_err||²
+
+    balance = 0 → α = 0.5 (equal weighting). The gradient pushes α toward
+    whichever component has larger raw MSE. Bounded and one-parameter — no
+    EMA, no log/exp, no instability. Converges in tens of steps.
+
     Args:
-        pred_axang: (B, 3) predicted axis-angle from PoseNet
-        pred_trans: (B, 3) predicted translation from PoseNet
-        gt_axang:   (B, 3) ground-truth axis-angle from C3VDv2 pose.txt
-        gt_trans:   (B, 3) ground-truth translation in metres
+        pred_axang:  (B, 3) predicted axis-angle from PoseNet
+        pred_trans:  (B, 3) predicted translation from PoseNet
+        gt_axang:    (B, 3) ground-truth axis-angle from C3VDv2 pose.txt
+        gt_trans:    (B, 3) ground-truth translation in metres
+        rot_weight:  scalar weight for rotation (used when balance is None)
+        trans_weight: scalar weight for translation (used when balance is None)
+        balance:     learnable raw logit (1,) tensor; None → fixed weights
     Returns:
         Scalar loss.
     """
     rot_loss = F.mse_loss(pred_axang, gt_axang)
     trans_loss = F.mse_loss(pred_trans, gt_trans)
+    if balance is not None:
+        alpha = torch.sigmoid(balance.squeeze())
+        return alpha * rot_loss + (1.0 - alpha) * trans_loss
     return rot_weight * rot_loss + trans_weight * trans_loss
 
 

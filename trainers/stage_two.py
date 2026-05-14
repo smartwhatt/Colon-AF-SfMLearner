@@ -13,9 +13,22 @@ The frozen position net provides reliable registrations which serve as:
 from __future__ import absolute_import, division, print_function
 
 import torch
+import torch.nn as nn
 import networks
 
 import torch.nn.functional as F
+
+
+class PoseBalanceScalar(nn.Module):
+    """Single learnable logit that balances rotation vs. translation in pose loss.
+
+    α = σ(balance) interpolates between rot (α → 1) and trans (α → 0).
+    Initialised at 0 → α = 0.5. Sigmoid-bounded, one parameter, no instability.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.balance = nn.Parameter(torch.zeros(1))
 from layers import get_smooth_loss, get_smooth_bright
 from .base import BaseTrainer
 
@@ -91,6 +104,10 @@ class StageTwoTrainer(BaseTrainer):
                 self.models["encoder"].num_ch_enc, self.opt.scales
             ).to(self.device)
             self.parameters_to_train += list(self.models["specular"].parameters())
+
+        if getattr(self.opt, "use_uncertainty_pose", False):
+            self.models["pose_balance"] = PoseBalanceScalar().to(self.device)
+            self.parameters_to_train += list(self.models["pose_balance"].parameters())
 
     def load_model(self):
         """Load frozen position weights and optional trainable Stage 2 weights."""
