@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Submit script for Run E: SpecularNet + PPS + Uncertainty-Weighted Pose Loss on HF-backed C3VDv2.
-# Builds on Run D (stage2_specular_pps/weights_best). Tests B.1 (Kendall & Cipolla CVPR 2017).
+# Submit script for Run E: SpecularNet + PPS + Pose Balance Scalar on HF-backed C3VDv2.
+# Builds on Run D (stage2_specular_pps/weights_best). Tests B.1 (Kendall & Cipolla).
+#
+# Single sigmoid-bounded scalar balances rotation vs. translation in the supervised
+# pose loss.  α = σ(balance).  No EMA, no log/exp, no instability.
 #
 # Usage:
 #   bash scripts/submit_uncertainty_pose_hf.sh
@@ -54,7 +57,7 @@ export PPS_SUP_WEIGHT="${PPS_SUP_WEIGHT:-0.01}"
 export PPS_SELF_WEIGHT="${PPS_SELF_WEIGHT:-0.0}"
 export PPS_LIGHT_BASELINE_MM="${PPS_LIGHT_BASELINE_MM:-3.0}"
 
-# Uncertainty-weighted pose loss (B.1) — enabled
+# Pose balance scalar (B.1) — enabled
 export USE_UNCERTAINTY_POSE="1"
 
 # =============================================================================
@@ -63,14 +66,14 @@ export USE_UNCERTAINTY_POSE="1"
 
 mkdir -p "$LOG_DIR"
 
-echo ">>> Run E: SpecularNet + PPS + Uncertainty Pose (B.1)"
+echo ">>> Run E: SpecularNet + PPS + Pose Balance Scalar (B.1)"
 echo "    Stage 1 weights: $S1_FINAL_WEIGHTS"
 echo "    Log dir:         $LOG_DIR"
 echo "    Run dir:         $LOG_DIR/stage2_specular_pps_uncertainty"
 echo "    HF repo:         $HF_REPO_ID"
 echo "    Specular weight: $SPECULAR_LOSS_WEIGHT"
 echo "    PPS sup weight:  $PPS_SUP_WEIGHT"
-echo "    Uncertainty pose: ON (log_s_rot + log_s_trans learnable)"
+echo "    Pose balance:    ON (α = σ(balance), init α = 0.5)"
 echo ""
 
 bash scripts/run_finetune_c3vdv2.sh
