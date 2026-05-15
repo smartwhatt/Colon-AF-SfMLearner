@@ -1,0 +1,99 @@
+{
+  "captured_at": "2026-05-15T14:41:23.855078+00:00",
+  "checkpoint": {
+    "weight_files": [
+      "adam.pth",
+      "depth.pth",
+      "encoder.pth",
+      "pose.pth",
+      "pose_encoder.pth",
+      "position.pth",
+      "position_encoder.pth",
+      "specular.pth",
+      "transform.pth",
+      "transform_encoder.pth"
+    ],
+    "weight_hashes": {
+      "adam.pth": "6e7a9eb5aed26a5c0d428b3d0b8f5fb8e53d2871ab37714c1116b2c0776b300f",
+      "depth.pth": "137192e694e05dc43804b07dd63b6dd30081f8db825bd8746e514a8356a2634c",
+      "encoder.pth": "967bc694044b6e14a41efc9e987b3bc87a0e5abc74b018317ae12052e18b07dc",
+      "pose.pth": "476290820a1f7bc7ee495a68091cde26beabc708f20f4dd1a81bf980eb41ac3a",
+      "pose_encoder.pth": "f9b7825dd3c4e63a13ae2d2dfc335d020bb514a4bcee184a68e81649046ff023",
+      "position.pth": "04d0760600067b3c3aae85a547350ae7fb5efb6982aaf93afaa947c2346574da",
+      "position_encoder.pth": "2e2f669f87f85807c5038dd880422c51c87774cd5cff2b4edf92125715dede15",
+      "specular.pth": "647129da987f3717a306a6497f008c436879236433e3b7e638e591f91d552dd0",
+      "transform.pth": "304167245fb09b0deefb14158794e335f27fb2b708a05be46d87f129503eb472",
+      "transform_encoder.pth": "368fb3ad3a7eaa7992f12dfeadb91778be74736e7adefc3e8dfda31dd996781d"
+    },
+    "weights_folder": "/workspace/logs/c3vdv2_hf/stage2_specular_pps/models/weights_best"
+  },
+  "data": {
+    "hf_cache_dir": null,
+    "hf_repo_id": "SmartWhatt/c3vdv2-SfM",
+    "hf_split": "test",
+    "hf_streaming": false
+  },
+  "environment": {
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "platform": "Linux-6.6.13+bpo-amd64-x86_64-with-glibc2.35",
+    "python_version": "3.11.13 | packaged by conda-forge | (main, Jun  4 2025, 14:48:23) [GCC 13.3.0]",
+    "torch_version": "2.10.0+cu128"
+  },
+  "evaluation_command": "uv run python tools/evaluate_c3vdv2.py --data_source hf --hf_repo_id SmartWhatt/c3vdv2-SfM --hf_split test --weights_folder logs/c3vdv2_hf/stage2_specular_pps/models/weights_best",
+  "files": {
+    "pyproject.toml": "6854db2b22bed6f7bf0f3574eac163cc5cb7497b3cac4e01096018ea3dd0b46d",
+    "training_script": "ece02c4a7b549e36f6c9e81a7c43389604c08e5c2ac4bd52d746bfab7239fcc3",
+    "uv.lock": "dbf4e73330fbde365e3abda050d2ddb703102339f7e7ab5f6bdfac4af42cec11"
+  },
+  "known_config": {
+    "pps_light_baseline_mm": 3.0,
+    "pps_self_weight": 0.0,
+    "pps_supervised_weight": 0.01,
+    "s1_weights_path": "$PROJECT_DIR/logs/c3vdv2_hf/stage1/models/weights_best/",
+    "s2_epochs": 20,
+    "s2_lr": 0.0001,
+    "script_defaults": {
+      "C3VDV2_DEV_HF_SPLIT": "",
+      "C3VDV2_VAL_BATCHES": "8",
+      "DATA_SOURCE": "hf",
+      "GPU": "0",
+      "HF_CACHE_DIR": "",
+      "HF_REPO_ID": "SmartWhatt/c3vdv2-SfM",
+      "HF_SHUFFLE_BUFFER": "10000",
+      "HF_STREAMING": "0",
+      "LOG_DIR": "$PROJECT_DIR/logs/c3vdv2_hf",
+      "PPS_LIGHT_BASELINE_MM": "3.0",
+      "PPS_SELF_WEIGHT": "0.0",
+      "PPS_SUP_WEIGHT": "0.01",
+      "RAMP_EPOCHS": "8",
+      "S1_FINAL_WEIGHTS": "$PROJECT_DIR/logs/c3vdv2_hf/stage1/models/weights_best/",
+      "S2_BATCH": "12",
+      "S2_EPOCHS": "20",
+      "S2_LR": "1e-4",
+      "S2_LR_STEP": "10",
+      "SPECULAR_LOSS_WEIGHT": "0.05",
+      "SPECULAR_THRESHOLD": "0.98",
+      "STEPS_PER_EPOCH": "",
+      "USE_SPECULAR_NET": "1",
+      "W_DEPTH_END": "0.3",
+      "W_DEPTH_START": "1.0",
+      "W_POSE_END": "0.1",
+      "W_POSE_START": "0.5"
+    },
+    "specular_loss_weight": 0.05,
+    "specular_net": true,
+    "specular_threshold": 0.98,
+    "w_depth_end": 0.3,
+    "w_depth_start": 1.0,
+    "w_pose_end": 0.1,
+    "w_pose_start": 0.5
+  },
+  "repo": {
+    "branch": "main",
+    "commit": "b6c6e05f69a14dd3100387a6af76eb8f22683b64",
+    "diff_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "status_short": "?? reports/\n?? splits/c3vdv2/"
+  },
+  "run_id": "run_d_specular_pps_weights_best"
+}
