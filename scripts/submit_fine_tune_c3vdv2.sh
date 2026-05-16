@@ -13,6 +13,8 @@ module load Mamba/23.11.0-0        # Load the conda module
 
 conda activate /lustrefs/disk/project/lt200353-pcllm/swattana/conda   # Activate the conda environment
 
+uv run scripts/utils/download_real_colon_to_hf.py SmartWhatt/real-colon-SfM --data-root /scratch/lt200353-pcllm/location/real_colon/dataset/ --seed 42 --tmp-dir /scratch/lt200353-pcllm/tmp/
+
 # =============================================================================
 # PATHS — adjust to your LANTA project layout
 # =============================================================================

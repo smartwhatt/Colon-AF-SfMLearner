@@ -14,6 +14,12 @@ Expected extracted layout:
     lesion_info.csv
     dataset_description.md
 
+Note: this local split format is for contiguous frame extractions because
+MonoDataset resolves temporal neighbours as frame_index - 1 and frame_index + 1.
+If the official REAL-Colon extraction is already subsampled, use
+scripts/utils/download_real_colon_to_hf.py instead; its HF triplet rows carry
+explicit prev/curr/next images.
+
 The output follows MonoDataset's default split convention:
   splits/real_colon/train_files.txt
   splits/real_colon/val_files.txt
@@ -30,6 +36,7 @@ import csv
 import json
 import os
 import random
+import statistics
 from dataclasses import asdict, dataclass
 
 
@@ -106,11 +113,67 @@ def frame_path(data_root: str, seq_id: str, frame_index: int) -> str:
     return os.path.join(frame_dir(data_root, seq_id), f"{seq_id}_{frame_index}.jpg")
 
 
+def available_frame_indices(data_root: str, seq_id: str) -> list[int]:
+    seq_frame_dir = frame_dir(data_root, seq_id)
+    if not os.path.isdir(seq_frame_dir):
+        return []
+
+    prefix = f"{seq_id}_"
+    suffix = ".jpg"
+    indices = []
+    for filename in os.listdir(seq_frame_dir):
+        if not filename.startswith(prefix) or not filename.endswith(suffix):
+            continue
+        raw_index = filename[len(prefix) : -len(suffix)]
+        try:
+            indices.append(int(raw_index))
+        except ValueError:
+            continue
+    return sorted(set(indices))
+
+
+def infer_extracted_frame_step(frame_indices: list[int]) -> int:
+    deltas = [
+        right - left
+        for left, right in zip(frame_indices, frame_indices[1:])
+        if right > left
+    ]
+    if not deltas:
+        return 1
+    return max(1, round(statistics.median(deltas)))
+
+
+def target_native_stride(
+    seq: SequenceInfo,
+    target_fps: float,
+    fallback_stride: int,
+) -> int:
+    if seq.fps is None or seq.fps <= 0 or target_fps <= 0:
+        return max(1, fallback_stride)
+    return max(1, round(seq.fps / target_fps))
+
+
+def sample_available_frame_indices(
+    seq: SequenceInfo,
+    frame_indices: list[int],
+    target_fps: float,
+    fallback_stride: int,
+) -> list[int]:
+    if len(frame_indices) < 3:
+        return []
+
+    extracted_step = infer_extracted_frame_step(frame_indices)
+    desired_stride = target_native_stride(seq, target_fps, fallback_stride)
+    available_step = max(1, round(desired_stride / extracted_step))
+    return frame_indices[::available_step]
+
+
 def validate_sequences(
     data_root: str,
     sequences: list[SequenceInfo],
     verify_sample_paths: bool,
     sample_stride: int,
+    require_contiguous_neighbors: bool = True,
 ) -> tuple[list[SequenceInfo], list[str]]:
     valid = []
     warnings = []
@@ -127,29 +190,50 @@ def validate_sequences(
                 warnings.append(f"{seq.seq_id}: missing frame directory {seq_frame_dir}")
             continue
 
-        anchors = [1, 2, seq.num_frames - 1, seq.num_frames]
-        missing_anchors = [
-            idx for idx in anchors if not os.path.isfile(frame_path(data_root, seq.seq_id, idx))
-        ]
-        if missing_anchors:
+        frame_indices = available_frame_indices(data_root, seq.seq_id)
+        if len(frame_indices) < 3:
             warnings.append(
-                f"{seq.seq_id}: missing expected frame(s) "
-                + ", ".join(str(idx) for idx in missing_anchors)
+                f"{seq.seq_id}: only {len(frame_indices)} extracted frame(s) found"
             )
             continue
 
-        if verify_sample_paths:
-            missing_sample = next(
-                (
-                    idx
-                    for idx in range(2, seq.num_frames, sample_stride)
-                    if not os.path.isfile(frame_path(data_root, seq.seq_id, idx))
-                ),
-                None,
-            )
-            if missing_sample is not None:
-                warnings.append(f"{seq.seq_id}: missing sampled frame {missing_sample}")
+        if require_contiguous_neighbors:
+            anchors = [1, 2, seq.num_frames - 1, seq.num_frames]
+            missing_anchors = [
+                idx
+                for idx in anchors
+                if not os.path.isfile(frame_path(data_root, seq.seq_id, idx))
+            ]
+            if missing_anchors:
+                warnings.append(
+                    f"{seq.seq_id}: missing expected contiguous frame(s) "
+                    + ", ".join(str(idx) for idx in missing_anchors)
+                )
                 continue
+
+        if verify_sample_paths:
+            if require_contiguous_neighbors:
+                sampled_indices = list(range(2, seq.num_frames, sample_stride))
+                missing_sample = next(
+                    (
+                        idx
+                        for center_idx in sampled_indices
+                        for idx in (center_idx - 1, center_idx, center_idx + 1)
+                        if not os.path.isfile(frame_path(data_root, seq.seq_id, idx))
+                    ),
+                    None,
+                )
+                if missing_sample is not None:
+                    warnings.append(f"{seq.seq_id}: missing sampled frame {missing_sample}")
+                    continue
+            else:
+                sampled_indices = frame_indices[:: max(1, sample_stride)]
+                if len(sampled_indices) < 3:
+                    warnings.append(
+                        f"{seq.seq_id}: fewer than 3 frames remain after sample stride "
+                        f"{sample_stride}"
+                    )
+                    continue
 
         valid.append(seq)
 

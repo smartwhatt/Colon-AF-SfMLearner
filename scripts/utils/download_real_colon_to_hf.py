@@ -25,9 +25,11 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 
 from scripts.generate_splits_realcolon import (  # noqa: E402
     SequenceInfo,
+    available_frame_indices,
     frame_path,
     load_video_info,
     partition_sequences,
+    sample_available_frame_indices,
     validate_sequences,
 )
 
@@ -100,7 +102,11 @@ under CC BY 4.0.
 
 Original dataset DOI: https://doi.org/10.25452/figshare.plus.22202866
 
-Rows are lower-fps temporal triplets. REAL-Colon does not provide depth or pose
+Rows are lower-fps temporal triplets sampled from the extracted frame files that
+exist on disk. If the official extraction is already subsampled, the requested
+`target_fps` is approximated by the nearest integer step on that available frame
+grid. `frame_stride` records the actual original-frame distance between each
+row's previous and current image. REAL-Colon does not provide depth or pose
 ground truth, so `depth`, `occlusion`, `pose_curr2prev`, and `pose_curr2next`
 are null and `has_depth`, `has_occlusion`, and `has_pose` are false.
 
@@ -150,20 +156,18 @@ def _encode_image_file(path: str) -> dict:
         return {"bytes": f.read(), "path": None}
 
 
-def _frame_stride(seq: SequenceInfo, target_fps: float, fallback_stride: int) -> int:
-    if seq.fps is None or seq.fps <= 0:
-        return max(1, fallback_stride)
-    return max(1, round(seq.fps / target_fps))
-
-
 def _triplet_rows_for_sequence(
     data_root: str,
     seq: SequenceInfo,
     target_fps: float,
     fallback_stride: int,
 ):
-    stride = _frame_stride(seq, target_fps, fallback_stride)
-    frame_indices = list(range(1, seq.num_frames + 1, stride))
+    frame_indices = sample_available_frame_indices(
+        seq,
+        available_frame_indices(data_root, seq.seq_id),
+        target_fps,
+        fallback_stride,
+    )
     if len(frame_indices) < 3:
         return
 
@@ -171,6 +175,7 @@ def _triplet_rows_for_sequence(
         idx_prev = frame_indices[pos - 1]
         idx_curr = frame_indices[pos]
         idx_next = frame_indices[pos + 1]
+        frame_stride = idx_curr - idx_prev
 
         prev_path = frame_path(data_root, seq.seq_id, idx_prev)
         curr_path = frame_path(data_root, seq.seq_id, idx_curr)
@@ -202,7 +207,7 @@ def _triplet_rows_for_sequence(
             "has_pose":        False,
             "source_fps":      seq.fps,
             "target_fps":      target_fps,
-            "frame_stride":    stride,
+            "frame_stride":    frame_stride,
         }
 
 
@@ -237,7 +242,7 @@ def process_split(
         path_in_repo = f"data/{split_name}/shard_{shard_n:05d}.parquet"
         local_path = os.path.join(args.tmp_dir, f"real_colon_{split_name}_{shard_n:05d}.parquet")
         write_parquet(rows, local_path)
-        if path_in_repo in existing_hf:
+        if path_in_repo in existing_hf and not args.overwrite_existing:
             print(f"  {path_in_repo} already on HF, skipping upload")
         else:
             api.upload_file(
@@ -280,6 +285,11 @@ def main() -> None:
     parser.add_argument("--val-fraction", type=float, default=0.10)
     parser.add_argument("--test-fraction", type=float, default=0.10)
     parser.add_argument("--verify-sample-paths", action="store_true")
+    parser.add_argument(
+        "--overwrite-existing",
+        action="store_true",
+        help="Replace existing HF shard paths instead of treating them as resume-complete",
+    )
     args = parser.parse_args()
 
     hf_token = args.hf_token or os.environ.get("HF_TOKEN")
@@ -294,6 +304,7 @@ def main() -> None:
         sequences,
         verify_sample_paths=args.verify_sample_paths,
         sample_stride=1 if args.verify_sample_paths else args.fallback_stride,
+        require_contiguous_neighbors=False,
     )
     for warning in warnings[:20]:
         print(f"  warning: {warning}")
