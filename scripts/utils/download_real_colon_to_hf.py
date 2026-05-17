@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import re
 import shutil
 import sys
 from collections import Counter
@@ -140,6 +141,7 @@ REAL_COLON_K_NORM = np.array(
 ).flatten().tolist()
 
 _HF_IMAGE_TYPE = pa.struct([pa.field("bytes", pa.binary()), pa.field("path", pa.string())])
+_SHARD_RE = re.compile(r"^shard_(?P<num>\d{5})\.parquet$")
 
 PARQUET_SCHEMA = pa.schema([
     pa.field("dataset_name",    pa.string()),
@@ -218,6 +220,17 @@ class QualityFilterState:
     def __post_init__(self) -> None:
         if self.reported_paths is None:
             self.reported_paths = set()
+
+
+@dataclass(frozen=True)
+class TripletSpec:
+    idx_prev: int
+    idx_curr: int
+    idx_next: int
+    prev_path: str
+    curr_path: str
+    next_path: str
+    frame_stride: int
 
 
 def _encode_image_file(path: str) -> dict:
@@ -350,7 +363,7 @@ def _get_frame_quality(
     return quality
 
 
-def _triplet_rows_for_sequence(
+def _triplet_specs_for_sequence(
     data_root: str,
     seq: SequenceInfo,
     target_fps: float,
@@ -393,28 +406,63 @@ def _triplet_rows_for_sequence(
                 quality_state.stats["quality_skipped_triplets"] += 1
                 continue
 
-        yield {
-            "dataset_name":    "real_colon",
-            "sequence":        seq.seq_id,
-            "frame_idx":       idx_curr,
-            "frame_idx_prev":  idx_prev,
-            "frame_idx_curr":  idx_curr,
-            "frame_idx_next":  idx_next,
-            "rgb_prev":        _encode_image_file(prev_path),
-            "rgb_curr":        _encode_image_file(curr_path),
-            "rgb_next":        _encode_image_file(next_path),
-            "depth":           None,
-            "occlusion":       None,
-            "pose_curr2prev":  None,
-            "pose_curr2next":  None,
-            "K":               REAL_COLON_K_NORM,
-            "has_depth":       False,
-            "has_occlusion":   False,
-            "has_pose":        False,
-            "source_fps":      seq.fps,
-            "target_fps":      target_fps,
-            "frame_stride":    frame_stride,
-        }
+        yield TripletSpec(
+            idx_prev=idx_prev,
+            idx_curr=idx_curr,
+            idx_next=idx_next,
+            prev_path=prev_path,
+            curr_path=curr_path,
+            next_path=next_path,
+            frame_stride=frame_stride,
+        )
+
+
+def _row_from_triplet_spec(
+    seq: SequenceInfo,
+    target_fps: float,
+    spec: TripletSpec,
+) -> dict:
+    return {
+        "dataset_name":    "real_colon",
+        "sequence":        seq.seq_id,
+        "frame_idx":       spec.idx_curr,
+        "frame_idx_prev":  spec.idx_prev,
+        "frame_idx_curr":  spec.idx_curr,
+        "frame_idx_next":  spec.idx_next,
+        "rgb_prev":        _encode_image_file(spec.prev_path),
+        "rgb_curr":        _encode_image_file(spec.curr_path),
+        "rgb_next":        _encode_image_file(spec.next_path),
+        "depth":           None,
+        "occlusion":       None,
+        "pose_curr2prev":  None,
+        "pose_curr2next":  None,
+        "K":               REAL_COLON_K_NORM,
+        "has_depth":       False,
+        "has_occlusion":   False,
+        "has_pose":        False,
+        "source_fps":      seq.fps,
+        "target_fps":      target_fps,
+        "frame_stride":    spec.frame_stride,
+    }
+
+
+def _triplet_rows_for_sequence(
+    data_root: str,
+    seq: SequenceInfo,
+    target_fps: float,
+    fallback_stride: int,
+    quality_state: QualityFilterState | None = None,
+    split_name: str = "",
+):
+    for spec in _triplet_specs_for_sequence(
+        data_root,
+        seq,
+        target_fps,
+        fallback_stride,
+        quality_state=quality_state,
+        split_name=split_name,
+    ):
+        yield _row_from_triplet_spec(seq, target_fps, spec)
 
 
 def write_parquet(rows: list[dict], path: str) -> None:
@@ -429,6 +477,56 @@ def write_parquet(rows: list[dict], path: str) -> None:
     )
 
 
+def _remove_staged_shards_from(split_dir: str, first_shard_n: int) -> None:
+    if not os.path.isdir(split_dir):
+        return
+    for filename in os.listdir(split_dir):
+        match = _SHARD_RE.match(filename)
+        if match and int(match.group("num")) >= first_shard_n:
+            os.remove(os.path.join(split_dir, filename))
+
+
+def _scan_staged_split(split_dir: str) -> tuple[int, int]:
+    if not os.path.isdir(split_dir):
+        return 0, 0
+
+    total_rows = 0
+    shard_n = 0
+    while True:
+        shard_path = os.path.join(split_dir, f"shard_{shard_n:05d}.parquet")
+        if not os.path.exists(shard_path):
+            break
+        try:
+            metadata = pq.read_metadata(shard_path)
+        except Exception as exc:
+            print(
+                f"  warning: removing unreadable staged shard {shard_path}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            _remove_staged_shards_from(split_dir, shard_n)
+            break
+        if metadata.num_rows <= 0:
+            print(f"  warning: removing empty staged shard {shard_path}")
+            _remove_staged_shards_from(split_dir, shard_n)
+            break
+        total_rows += metadata.num_rows
+        shard_n += 1
+
+    stale_shards = []
+    for filename in os.listdir(split_dir):
+        match = _SHARD_RE.match(filename)
+        if match and int(match.group("num")) >= shard_n:
+            stale_shards.append(filename)
+    if stale_shards:
+        print(
+            f"  warning: removing {len(stale_shards)} non-contiguous staged "
+            f"shard(s) in {split_dir}"
+        )
+        _remove_staged_shards_from(split_dir, shard_n)
+
+    return total_rows, shard_n
+
+
 def process_split(
     split_name: str,
     sequences: list[SequenceInfo],
@@ -439,21 +537,27 @@ def process_split(
     split_dir = os.path.join(staging_dir, "data", split_name)
     os.makedirs(split_dir, exist_ok=True)
     rows = []
-    shard_n = 0
-    total_rows = 0
+    existing_rows, shard_n = _scan_staged_split(split_dir)
+    skip_rows = existing_rows
+    new_rows = 0
+    if existing_rows:
+        print(
+            f"  {split_name}: resuming after {existing_rows:,} staged row(s) "
+            f"across {shard_n:,} shard(s)"
+        )
 
     def flush() -> None:
-        nonlocal rows, shard_n, total_rows
+        nonlocal rows, shard_n, new_rows
         if not rows:
             return
         local_path = os.path.join(split_dir, f"shard_{shard_n:05d}.parquet")
         write_parquet(rows, local_path)
-        total_rows += len(rows)
+        new_rows += len(rows)
         rows = []
         shard_n += 1
 
     for seq in tqdm(sequences, desc=f"{split_name} sequences", ncols=90):
-        for row in _triplet_rows_for_sequence(
+        for spec in _triplet_specs_for_sequence(
             args.data_root,
             seq,
             args.target_fps,
@@ -461,12 +565,22 @@ def process_split(
             quality_state=quality_state,
             split_name=split_name,
         ):
+            if skip_rows > 0:
+                skip_rows -= 1
+                continue
+            row = _row_from_triplet_spec(seq, args.target_fps, spec)
             rows.append(row)
             if len(rows) >= args.shard_size:
                 flush()
 
     flush()
-    print(f"  {split_name}: {total_rows:,} triplets")
+    total_rows = existing_rows + new_rows
+    if skip_rows > 0:
+        print(
+            f"  warning: {split_name} staging has {skip_rows:,} extra row(s) "
+            "beyond the current deterministic split; check that resume options match"
+        )
+    print(f"  {split_name}: {total_rows:,} triplets ({new_rows:,} newly staged)")
     return total_rows
 
 
@@ -495,12 +609,11 @@ def _prepare_staging_dir(args: argparse.Namespace) -> str:
         return staging_dir
 
     if os.path.exists(staging_dir):
-        if args.staging_dir is not None and not args.overwrite_staging:
-            raise SystemExit(
-                f"Staging directory already exists: {staging_dir}\n"
-                "Pass --overwrite-staging to replace it, or choose another --staging-dir."
-            )
-        shutil.rmtree(staging_dir)
+        if args.overwrite_staging:
+            print(f"Replacing existing staging directory: {staging_dir}")
+            shutil.rmtree(staging_dir)
+        else:
+            print(f"Resuming existing staging directory: {staging_dir}")
     os.makedirs(staging_dir, exist_ok=True)
     return staging_dir
 
@@ -599,7 +712,7 @@ def main() -> None:
     parser.add_argument(
         "--overwrite-staging",
         action="store_true",
-        help="Replace an existing user-provided --staging-dir before generating shards",
+        help="Replace an existing staging directory instead of resuming it",
     )
     parser.add_argument(
         "--upload-staged-only",
