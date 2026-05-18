@@ -29,14 +29,20 @@ def load_hf_split(
 ):
     """Import Hugging Face datasets lazily so local-only training has no import cost."""
     try:
-        from datasets import load_dataset
+        from datasets import VerificationMode, load_dataset
     except ImportError as exc:
         raise ImportError(
             "Hugging Face dataset loading requires `datasets[vision]`. "
             "Install project dependencies from pyproject.toml before using --data_source hf."
         ) from exc
 
-    return load_dataset(repo_id, split=split, streaming=streaming, cache_dir=cache_dir)
+    return load_dataset(
+        repo_id,
+        split=split,
+        streaming=streaming,
+        cache_dir=cache_dir,
+        verification_mode=VerificationMode.NO_CHECKS,
+    )
 
 
 def build_hf_triplet_dataset(

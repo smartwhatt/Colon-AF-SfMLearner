@@ -104,9 +104,7 @@ dataset_info:
   - name: frame_stride
     dtype: int32
   splits:
-  - name: train
-  - name: val
-  - name: test
+{splits_block}
 ---
 
 # REAL-Colon HF Triplets
@@ -618,10 +616,37 @@ def _prepare_staging_dir(args: argparse.Namespace) -> str:
     return staging_dir
 
 
-def _write_readme(staging_dir: str, repo_id: str) -> None:
+def _split_info_block(totals: dict[str, int] | None = None) -> str:
+    lines = []
+    for split in ("train", "val", "test"):
+        lines.append(f"  - name: {split}")
+        if totals is not None and split in totals:
+            lines.append(f"    num_examples: {totals[split]}")
+    return "\n".join(lines)
+
+
+def _write_readme(
+    staging_dir: str,
+    repo_id: str,
+    totals: dict[str, int] | None = None,
+) -> None:
     readme_path = os.path.join(staging_dir, "README.md")
     with open(readme_path, "w", encoding="utf-8") as f:
-        f.write(README_TEMPLATE.format(repo_id=repo_id))
+        f.write(
+            README_TEMPLATE.format(
+                repo_id=repo_id,
+                splits_block=_split_info_block(totals),
+            )
+        )
+
+
+def _scan_staged_totals(staging_dir: str) -> dict[str, int]:
+    totals = {}
+    for split in ("train", "val", "test"):
+        split_dir = os.path.join(staging_dir, "data", split)
+        rows, _ = _scan_staged_split(split_dir)
+        totals[split] = rows
+    return totals
 
 
 def _summarize_existing_remote(api: HfApi, args: argparse.Namespace) -> set[str]:
@@ -774,6 +799,8 @@ def main() -> None:
     _summarize_existing_remote(api, args)
 
     if args.upload_staged_only:
+        totals = _scan_staged_totals(staging_dir)
+        _write_readme(staging_dir, args.repo_id, totals)
         _upload_staged_folder(api, args, hf_token, staging_dir)
         print(f"Dataset: https://huggingface.co/datasets/{args.repo_id}")
         return
@@ -853,6 +880,7 @@ def main() -> None:
 
     print("Done.")
     print(totals)
+    _write_readme(staging_dir, args.repo_id, totals)
     _upload_staged_folder(api, args, hf_token, staging_dir)
     print(f"Dataset: https://huggingface.co/datasets/{args.repo_id}")
 

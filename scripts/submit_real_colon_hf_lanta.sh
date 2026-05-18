@@ -135,12 +135,18 @@ prefetch_hf_dataset() {
     cd "$PROJECT_DIR"
     uv run python - "$HF_REPO_ID" "$HF_CACHE_DIR" "$PREFETCH_SPLITS" <<'PY'
 import sys
-from datasets import load_dataset
+from datasets import VerificationMode, load_dataset
 
 repo_id, cache_dir, split_text = sys.argv[1:4]
 for split in split_text.split():
     print(f"Loading {repo_id} split={split} into cache={cache_dir}", flush=True)
-    ds = load_dataset(repo_id, split=split, streaming=False, cache_dir=cache_dir)
+    ds = load_dataset(
+        repo_id,
+        split=split,
+        streaming=False,
+        cache_dir=cache_dir,
+        verification_mode=VerificationMode.NO_CHECKS,
+    )
     try:
         n_rows = len(ds)
     except TypeError:
