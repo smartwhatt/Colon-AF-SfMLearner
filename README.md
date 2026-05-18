@@ -142,14 +142,21 @@ C3VDv2 uses a specific pipeline with supervised depth/pose loss ramping.
 
 ### C. REAL-Colon (Self-Supervised)
 ```shell
-DATA_PATH=/path/to/REAL-Colon \
-LOAD_WEIGHTS_FOLDER=logs/c3vdv2/stage2/models/weights_19 \
-bash scripts/run_train_real_colon.sh
+# HF-backed diagnostic from the current C3VDv2 Run D checkpoint
+bash scripts/submit_real_colon_hf.sh
+
+# Lanta/SLURM: run with bash on a login node so HF data is cached before sbatch
+bash scripts/submit_real_colon_hf_lanta.sh
+
+# Or call the reusable wrapper directly
+DATA_SOURCE=hf HF_REPO_ID=SmartWhatt/real-colon-SfM \
+LOAD_WEIGHTS_FOLDER=logs/c3vdv2_hf/stage2_specular_pps/models/weights_best \
+bash scripts/run_finetune_real_colon.sh
 ```
 
 `LOAD_WEIGHTS_FOLDER` supplies the frozen Stage 1 registration network. If the
-same folder contains full Stage 2 weights, depth, pose, and transform are also
-warm-started without freezing for REAL-Colon adaptation.
+same folder contains full Stage 2 weights, depth, pose, transform, and
+SpecularNet are also warm-started without freezing for REAL-Colon adaptation.
 
 ---
 
