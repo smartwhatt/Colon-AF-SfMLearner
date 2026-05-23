@@ -34,6 +34,15 @@ from .base import BaseTrainer
 
 
 class StageTwoTrainer(BaseTrainer):
+    _DEFAULT_TRAIN_MODELS = (
+        "encoder",
+        "depth",
+        "transform_encoder",
+        "transform",
+        "pose_encoder",
+        "pose",
+        "specular",
+    )
 
     def build_models(self):
         # Depth
@@ -109,6 +118,55 @@ class StageTwoTrainer(BaseTrainer):
             self.models["pose_balance"] = PoseBalanceScalar().to(self.device)
             self.parameters_to_train += list(self.models["pose_balance"].parameters())
 
+        self._apply_trainable_module_allowlist()
+
+    def _trainable_module_allowlist(self):
+        modules = getattr(self.opt, "trainable_modules", []) or []
+        unique_modules = []
+        for name in modules:
+            if name not in unique_modules:
+                unique_modules.append(name)
+        return unique_modules
+
+    def _uses_trainable_module_allowlist(self):
+        return len(self._trainable_module_allowlist()) > 0
+
+    def _validate_trainable_module_allowlist(self, trainable_modules):
+        missing = [name for name in trainable_modules if name not in self.models]
+        if missing:
+            available = ", ".join(sorted(self.models.keys()))
+            requested = ", ".join(missing)
+            raise ValueError(
+                "Unknown trainable_modules: {}. Available modules: {}".format(
+                    requested, available
+                )
+            )
+
+    def _module_should_train(self, name):
+        trainable_modules = self._trainable_module_allowlist()
+        if not trainable_modules:
+            return True
+        return name in trainable_modules
+
+    def _apply_trainable_module_allowlist(self):
+        trainable_modules = self._trainable_module_allowlist()
+        if not trainable_modules:
+            return
+
+        self._validate_trainable_module_allowlist(trainable_modules)
+        trainable_set = set(trainable_modules)
+
+        for name, model in self.models.items():
+            should_train = name in trainable_set
+            for param in model.parameters():
+                param.requires_grad = should_train
+            if not should_train:
+                model.eval()
+
+        self.parameters_to_train = []
+        for name in trainable_modules:
+            self.parameters_to_train += list(self.models[name].parameters())
+
     def load_model(self):
         """Load frozen position weights and optional trainable Stage 2 weights."""
         import os
@@ -141,7 +199,9 @@ class StageTwoTrainer(BaseTrainer):
                 print("Loading {} weights without freezing...".format(n))
                 self._load_model_weights(trainable_folder, n)
                 for param in self.models[n].parameters():
-                    param.requires_grad = True
+                    param.requires_grad = self._module_should_train(n)
+
+        self._apply_trainable_module_allowlist()
 
         print("Adam is randomly initialized")
 
@@ -155,14 +215,21 @@ class StageTwoTrainer(BaseTrainer):
         self.models[model_name].load_state_dict(model_dict)
 
     def set_train(self):
-        for name in ("encoder", "depth", "transform_encoder", "transform",
-                     "pose_encoder", "pose", "specular"):
+        if self._uses_trainable_module_allowlist():
+            trainable_set = set(self._trainable_module_allowlist())
+            for name, model in self.models.items():
+                if name in trainable_set:
+                    model.train()
+                else:
+                    model.eval()
+            return
+
+        for name in self._DEFAULT_TRAIN_MODELS:
             if name in self.models:
                 self.models[name].train()
 
     def set_eval(self):
-        for name in ("encoder", "depth", "transform_encoder", "transform",
-                     "pose_encoder", "pose", "specular"):
+        for name in self._DEFAULT_TRAIN_MODELS:
             if name in self.models:
                 self.models[name].eval()
 

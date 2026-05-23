@@ -19,6 +19,9 @@
 # For a short diagnostic:
 #   HF_STREAMING=1 STEPS_PER_EPOCH=500 EPOCHS=1 SAVE_FREQUENCY=1 \
 #   bash scripts/run_finetune_real_colon.sh
+#
+# For frozen-depth Run B adaptation:
+#   ADAPTATION_PRESET=pose_transform bash scripts/run_finetune_real_colon.sh
 # =============================================================================
 
 set -e
@@ -64,6 +67,20 @@ MAX_DEPTH="${MAX_DEPTH:-0.1}"
 USE_SPECULAR_NET="${USE_SPECULAR_NET:-0}"
 SPECULAR_LOSS_WEIGHT="${SPECULAR_LOSS_WEIGHT:-0.05}"
 SPECULAR_THRESHOLD="${SPECULAR_THRESHOLD:-0.98}"
+
+ADAPTATION_PRESET="${ADAPTATION_PRESET:-full}"
+TRAINABLE_MODULES=()
+case "$ADAPTATION_PRESET" in
+    full)
+        ;;
+    pose_transform)
+        TRAINABLE_MODULES=(pose_encoder pose transform_encoder transform)
+        ;;
+    *)
+        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform"
+        exit 1
+        ;;
+esac
 
 log() { echo -e "\n\033[1;36m>>> $*\033[0m\n"; }
 
@@ -141,6 +158,12 @@ run_stage2_adaptation() {
     echo "  Output:       ${LOG_DIR}/${MODEL_NAME}"
     echo "  Frozen:       position_encoder + position from $LOAD_WEIGHTS_FOLDER"
     echo "  Warm start:   ${LOAD_TRAINABLE_WEIGHTS_FOLDER:-none}"
+    echo "  Preset:       $ADAPTATION_PRESET"
+    if [ "${#TRAINABLE_MODULES[@]}" -gt 0 ]; then
+        echo "  Trainable:    ${TRAINABLE_MODULES[*]}"
+    else
+        echo "  Trainable:    default Stage 2 modules"
+    fi
     echo "  Epochs:       $EPOCHS  LR: $LR  Batch: $BATCH"
     echo "  Weights init: $WEIGHTS_INIT"
     echo "  Depth range:  $MIN_DEPTH to $MAX_DEPTH"
@@ -180,6 +203,10 @@ run_stage2_adaptation() {
 
     if [ -n "$LOAD_TRAINABLE_WEIGHTS_FOLDER" ]; then
         cmd+=(--load_trainable_weights_folder "$LOAD_TRAINABLE_WEIGHTS_FOLDER")
+    fi
+
+    if [ "${#TRAINABLE_MODULES[@]}" -gt 0 ]; then
+        cmd+=(--trainable_modules "${TRAINABLE_MODULES[@]}")
     fi
 
     if [ "$USE_SPECULAR_NET" = "1" ]; then

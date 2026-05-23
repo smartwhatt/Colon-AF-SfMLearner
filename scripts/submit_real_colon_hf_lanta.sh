@@ -13,6 +13,7 @@
 #
 # Run this with bash on a login/submit node, not with sbatch directly:
 #   bash scripts/submit_real_colon_hf_lanta.sh
+#   ADAPTATION_PRESET=full START_RUN=run_d bash scripts/submit_real_colon_hf_lanta.sh
 #
 # The login/submit node prefetches the Hugging Face dataset into a shared cache.
 # The SLURM job then runs with HF offline flags and DATA_SOURCE=hf,
@@ -52,10 +53,24 @@ fi
 
 export LOG_DIR="${LOG_DIR:-$PROJECT_DIR/logs/real_colon_hf}"
 export GPU="${GPU:-0}"
+export ADAPTATION_PRESET="${ADAPTATION_PRESET:-pose_transform}"
+
+case "$ADAPTATION_PRESET" in
+    full)
+        ADAPTATION_TRAINABLE_MODULES="default Stage 2 modules"
+        ;;
+    pose_transform)
+        ADAPTATION_TRAINABLE_MODULES="pose_encoder pose transform_encoder transform"
+        ;;
+    *)
+        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform"
+        exit 1
+        ;;
+esac
 
 # run_d = SpecularNet + PPS best aggregate C3VDv2 checkpoint.
 # run_b = SpecularNet-only fallback from the stratified audit.
-export START_RUN="${START_RUN:-run_d}"
+export START_RUN="${START_RUN:-run_b}"
 export C3VDV2_LOG_DIR="${C3VDV2_LOG_DIR:-$PROJECT_DIR/logs/c3vdv2_hf}"
 
 case "$START_RUN" in
@@ -66,7 +81,11 @@ case "$START_RUN" in
         ;;
     run_b)
         DEFAULT_START_WEIGHTS="$C3VDV2_LOG_DIR/stage2_specular/models/weights_best/"
-        DEFAULT_MODEL_NAME="realcolon_run_b_diag"
+        if [ "$ADAPTATION_PRESET" = "pose_transform" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_b_pose_transform"
+        else
+            DEFAULT_MODEL_NAME="realcolon_run_b_diag"
+        fi
         DEFAULT_USE_SPECULAR_NET="1"
         ;;
     run_a)
@@ -85,7 +104,7 @@ export LOAD_TRAINABLE_WEIGHTS_FOLDER="${LOAD_TRAINABLE_WEIGHTS_FOLDER:-$LOAD_WEI
 export MODEL_NAME="${MODEL_NAME:-$DEFAULT_MODEL_NAME}"
 
 export EPOCHS="${EPOCHS:-1}"
-export LR="${LR:-1e-4}"
+export LR="${LR:-1e-5}"
 export BATCH="${BATCH:-12}"
 export LR_STEP="${LR_STEP:-10}"
 export NUM_WORKERS="${NUM_WORKERS:-12}"
@@ -200,6 +219,8 @@ submit_job() {
     echo "  Project:      $PROJECT_DIR"
     echo "  Start run:    $START_RUN"
     echo "  Start ckpt:   $LOAD_WEIGHTS_FOLDER"
+    echo "  Preset:       $ADAPTATION_PRESET"
+    echo "  Trainable:    $ADAPTATION_TRAINABLE_MODULES"
     echo "  Run dir:      $LOG_DIR/$MODEL_NAME"
     echo "  Cache marker: $CACHE_READY_MARKER"
     echo ""
@@ -236,6 +257,8 @@ run_slurm_job() {
     echo "  Offline:      HF_HUB_OFFLINE=$HF_HUB_OFFLINE HF_DATASETS_OFFLINE=$HF_DATASETS_OFFLINE"
     echo "  Weights init: $WEIGHTS_INIT"
     echo "  Steps/epoch:  ${STEPS_PER_EPOCH:-full split}"
+    echo "  Preset:       $ADAPTATION_PRESET"
+    echo "  Trainable:    $ADAPTATION_TRAINABLE_MODULES"
     echo ""
 
     bash scripts/run_finetune_real_colon.sh

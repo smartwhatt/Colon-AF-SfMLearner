@@ -18,6 +18,13 @@
 # -v /path/to/logs:/workspace/logs \ 
 # smartwatt/af-sfmlearner \ # bash scripts/run_finetune_c3vdv2.sh 
 #
+#
+# Run (HF-backed fine-tuning, with local HF cache):
+# docker run --gpus '"device=1"' --rm -it \
+#     -v /media/data01/smartwatt/hf:/root/.cache/huggingface \
+#     -v "$PWD":/workspace \
+#     -v "$PWD/logs":/workspace/logs \
+#     smartwatt/af-sfmlearner bash
 # =============================================================================
 FROM --platform=linux/amd64 pytorch/pytorch:2.8.0-cuda12.9-cudnn9-runtime
 

@@ -3,12 +3,13 @@
 # No SLURM - just sets environment variables and delegates to
 # run_finetune_real_colon.sh.
 #
-# Defaults are intentionally diagnostic-sized. Run D is the primary initializer;
-# set START_RUN=run_b to try the SpecularNet-only fallback.
+# Defaults are intentionally diagnostic-sized. Run B + pose_transform is the
+# frozen-depth recovery diagnostic; set ADAPTATION_PRESET=full to keep the
+# previous full Stage 2 adaptation behavior.
 #
 # Usage:
 #   bash scripts/submit_real_colon_hf.sh
-#   START_RUN=run_b bash scripts/submit_real_colon_hf.sh
+#   ADAPTATION_PRESET=full START_RUN=run_d bash scripts/submit_real_colon_hf.sh
 #   EPOCHS=20 STEPS_PER_EPOCH="" MODEL_NAME=realcolon_run_d_full bash scripts/submit_real_colon_hf.sh
 
 set -e
@@ -33,10 +34,24 @@ fi
 
 export LOG_DIR="${LOG_DIR:-$PROJECT_DIR/logs/real_colon_hf}"
 export GPU="${GPU:-0}"
+export ADAPTATION_PRESET="${ADAPTATION_PRESET:-pose_transform}"
+
+case "$ADAPTATION_PRESET" in
+    full)
+        ADAPTATION_TRAINABLE_MODULES="default Stage 2 modules"
+        ;;
+    pose_transform)
+        ADAPTATION_TRAINABLE_MODULES="pose_encoder pose transform_encoder transform"
+        ;;
+    *)
+        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform"
+        exit 1
+        ;;
+esac
 
 # run_d = SpecularNet + PPS best aggregate C3VDv2 checkpoint.
 # run_b = SpecularNet-only fallback from the stratified audit.
-START_RUN="${START_RUN:-run_d}"
+START_RUN="${START_RUN:-run_b}"
 C3VDV2_LOG_DIR="${C3VDV2_LOG_DIR:-$PROJECT_DIR/logs/c3vdv2_hf}"
 
 case "$START_RUN" in
@@ -47,7 +62,11 @@ case "$START_RUN" in
         ;;
     run_b)
         DEFAULT_START_WEIGHTS="$C3VDV2_LOG_DIR/stage2_specular/models/weights_best/"
-        DEFAULT_MODEL_NAME="realcolon_run_b_diag"
+        if [ "$ADAPTATION_PRESET" = "pose_transform" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_b_pose_transform"
+        else
+            DEFAULT_MODEL_NAME="realcolon_run_b_diag"
+        fi
         DEFAULT_USE_SPECULAR_NET="1"
         ;;
     run_a)
@@ -67,7 +86,7 @@ export MODEL_NAME="${MODEL_NAME:-$DEFAULT_MODEL_NAME}"
 
 # Diagnostic defaults. Override for a full campaign.
 export EPOCHS="${EPOCHS:-1}"
-export LR="${LR:-1e-4}"
+export LR="${LR:-1e-5}"
 export BATCH="${BATCH:-12}"
 export LR_STEP="${LR_STEP:-10}"
 export NUM_WORKERS="${NUM_WORKERS:-12}"
@@ -91,6 +110,8 @@ mkdir -p "$LOG_DIR"
 echo ">>> REAL-Colon HF self-supervised fine-tuning"
 echo "    Start run:      $START_RUN"
 echo "    Start weights:  $LOAD_WEIGHTS_FOLDER"
+echo "    Preset:         $ADAPTATION_PRESET"
+echo "    Trainable:      $ADAPTATION_TRAINABLE_MODULES"
 echo "    Log dir:        $LOG_DIR"
 echo "    Run dir:        $LOG_DIR/$MODEL_NAME"
 echo "    HF repo:        $HF_REPO_ID"

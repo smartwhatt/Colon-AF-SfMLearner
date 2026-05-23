@@ -157,6 +157,10 @@ class TrainingConfig(BaseModel):
         ],
         description="trainable model names to load from load_trainable_weights_folder",
     )
+    trainable_modules: List[str] = Field(
+        default=[],
+        description="optional Stage 2 module allowlist to train; empty keeps default behavior",
+    )
 
     # ── C3VDv2 / fine-tuning ──────────────────────────────────────────────────
     undistort_maps: str = Field(
