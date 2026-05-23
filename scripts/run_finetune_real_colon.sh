@@ -55,6 +55,7 @@ HEIGHT="${HEIGHT:-256}"
 WIDTH="${WIDTH:-320}"
 SAVE_FREQUENCY="${SAVE_FREQUENCY:-5}"
 LOG_FREQUENCY="${LOG_FREQUENCY:-200}"
+WEIGHTS_INIT="${WEIGHTS_INIT:-pretrained}"
 
 # Keep REAL-Colon adaptation numerically aligned with C3VDv2 checkpoints.
 MIN_DEPTH="${MIN_DEPTH:-0.001}"
@@ -141,6 +142,7 @@ run_stage2_adaptation() {
     echo "  Frozen:       position_encoder + position from $LOAD_WEIGHTS_FOLDER"
     echo "  Warm start:   ${LOAD_TRAINABLE_WEIGHTS_FOLDER:-none}"
     echo "  Epochs:       $EPOCHS  LR: $LR  Batch: $BATCH"
+    echo "  Weights init: $WEIGHTS_INIT"
     echo "  Depth range:  $MIN_DEPTH to $MAX_DEPTH"
     if [ -n "$STEPS_PER_EPOCH" ]; then
         echo "  Step cap:     $STEPS_PER_EPOCH batches/epoch"
@@ -165,6 +167,7 @@ run_stage2_adaptation() {
         --batch_size "$BATCH"
         --scheduler_step_size "$LR_STEP"
         --num_workers "$NUM_WORKERS"
+        --weights_init "$WEIGHTS_INIT"
         --height "$HEIGHT"
         --width "$WIDTH"
         --scales 0 1 2 3

@@ -33,6 +33,7 @@ export CONDA_ENV="${CONDA_ENV:-/lustrefs/disk/project/lt200353-pcllm/swattana/co
 export HF_CACHE_DIR="${HF_CACHE_DIR:-/scratch/lt200353-pcllm/swattana/hf_cache/datasets}"
 export HF_HOME="${HF_HOME:-/scratch/lt200353-pcllm/swattana/hf_cache/home}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_CACHE_DIR}"
+export TORCH_HOME="${TORCH_HOME:-$HF_HOME/torch}"
 export CACHE_READY_MARKER="${CACHE_READY_MARKER:-$HF_CACHE_DIR/.real_colon_sfm_ready}"
 
 # =============================================================================
@@ -90,6 +91,7 @@ export LR_STEP="${LR_STEP:-10}"
 export NUM_WORKERS="${NUM_WORKERS:-12}"
 export SAVE_FREQUENCY="${SAVE_FREQUENCY:-1}"
 export LOG_FREQUENCY="${LOG_FREQUENCY:-50}"
+export WEIGHTS_INIT="${WEIGHTS_INIT:-pretrained}"
 
 export MIN_DEPTH="${MIN_DEPTH:-0.001}"
 export MAX_DEPTH="${MAX_DEPTH:-0.1}"
@@ -102,6 +104,7 @@ export SPECULAR_THRESHOLD="${SPECULAR_THRESHOLD:-0.98}"
 # ad-hoc inspection from compute nodes.
 export PREFETCH_SPLITS="${PREFETCH_SPLITS:-train val}"
 export PREFETCH_HF="${PREFETCH_HF:-1}"
+export PREFETCH_TORCHVISION="${PREFETCH_TORCHVISION:-1}"
 
 log() { echo -e "\n\033[1;36m>>> $*\033[0m\n"; }
 
@@ -159,6 +162,36 @@ PY
     touch "$CACHE_READY_MARKER"
 }
 
+prefetch_torchvision_weights() {
+    if [ "$PREFETCH_TORCHVISION" != "1" ]; then
+        log "Skipping torchvision prefetch (PREFETCH_TORCHVISION=$PREFETCH_TORCHVISION)"
+        return
+    fi
+    if [ "$WEIGHTS_INIT" != "pretrained" ]; then
+        log "Skipping torchvision prefetch (WEIGHTS_INIT=$WEIGHTS_INIT)"
+        return
+    fi
+
+    log "Prefetching torchvision weights on submit node"
+    echo "  TORCH_HOME: $TORCH_HOME"
+    mkdir -p "$TORCH_HOME"
+
+    cd "$PROJECT_DIR"
+    uv run python - <<'PY'
+import os
+from pathlib import Path
+
+import torchvision.models as models
+
+print(f"TORCH_HOME={os.environ.get('TORCH_HOME')}", flush=True)
+_ = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+checkpoint = Path(os.environ["TORCH_HOME"]) / "hub" / "checkpoints" / "resnet18-f37072fd.pth"
+if not checkpoint.exists():
+    raise SystemExit(f"Expected torchvision checkpoint was not cached: {checkpoint}")
+print(f"Cached torchvision checkpoint: {checkpoint}", flush=True)
+PY
+}
+
 submit_job() {
     cd "$PROJECT_DIR"
     mkdir -p logs/slurm "$LOG_DIR"
@@ -193,12 +226,15 @@ run_slurm_job() {
     export HF_CACHE_DIR
     export HF_HOME
     export HF_DATASETS_CACHE
+    export TORCH_HOME
 
     echo "  Job ID:       ${SLURM_JOB_ID:-unknown}"
     echo "  Node:         ${SLURMD_NODENAME:-unknown}"
     echo "  HF repo:      $HF_REPO_ID"
     echo "  HF cache:     $HF_CACHE_DIR"
+    echo "  Torch cache:  $TORCH_HOME"
     echo "  Offline:      HF_HUB_OFFLINE=$HF_HUB_OFFLINE HF_DATASETS_OFFLINE=$HF_DATASETS_OFFLINE"
+    echo "  Weights init: $WEIGHTS_INIT"
     echo "  Steps/epoch:  ${STEPS_PER_EPOCH:-full split}"
     echo ""
 
@@ -210,5 +246,6 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
 else
     setup_runtime
     prefetch_hf_dataset
+    prefetch_torchvision_weights
     submit_job
 fi

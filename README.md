@@ -157,6 +157,9 @@ bash scripts/run_finetune_real_colon.sh
 `LOAD_WEIGHTS_FOLDER` supplies the frozen Stage 1 registration network. If the
 same folder contains full Stage 2 weights, depth, pose, transform, and
 SpecularNet are also warm-started without freezing for REAL-Colon adaptation.
+On Lanta, `HF_CACHE_DIR` caches dataset shards and `TORCH_HOME` caches
+torchvision weights such as ResNet18. For full-checkpoint REAL-Colon warm-starts
+you can set `WEIGHTS_INIT=scratch` to avoid ImageNet weight downloads.
 
 ---
 
