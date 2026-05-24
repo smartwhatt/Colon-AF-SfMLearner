@@ -695,6 +695,8 @@ class BaseTrainer(ABC):
         os.makedirs(save_folder, exist_ok=True)
 
         for model_name, model in self.models.items():
+            if model_name.startswith("teacher_"):
+                continue
             to_save = model.state_dict()
             if model_name == "encoder":
                 to_save["height"] = self.opt.height

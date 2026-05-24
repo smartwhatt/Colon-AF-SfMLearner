@@ -104,7 +104,7 @@ dataset_info:
   - name: frame_stride
     dtype: int32
   splits:
-{splits_block}
+{{splits_block}}
 ---
 
 # REAL-Colon HF Triplets
@@ -631,13 +631,10 @@ def _write_readme(
     totals: dict[str, int] | None = None,
 ) -> None:
     readme_path = os.path.join(staging_dir, "README.md")
+    readme = README_TEMPLATE.format(repo_id=repo_id)
+    readme = readme.replace("{splits_block}", _split_info_block(totals))
     with open(readme_path, "w", encoding="utf-8") as f:
-        f.write(
-            README_TEMPLATE.format(
-                repo_id=repo_id,
-                splits_block=_split_info_block(totals),
-            )
-        )
+        f.write(readme)
 
 
 def _scan_staged_totals(staging_dir: str) -> dict[str, int]:

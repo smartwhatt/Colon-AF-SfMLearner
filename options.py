@@ -45,6 +45,7 @@ EvalSplitType   = Literal["eigen", "eigen_benchmark", "benchmark",
 TrainModeType   = Literal["stage1", "stage2", "end_to_end",
                            "c3vdv2_stage1", "c3vdv2_stage2"]
 DataSourceType  = Literal["local", "hf"]
+TeacherConsistencyMode = Literal["relative_log_median"]
 
 
 # ── Config model ──────────────────────────────────────────────────────────────
@@ -160,6 +161,18 @@ class TrainingConfig(BaseModel):
     trainable_modules: List[str] = Field(
         default=[],
         description="optional Stage 2 module allowlist to train; empty keeps default behavior",
+    )
+    teacher_weights_folder: Optional[str] = Field(
+        default=None,
+        description="optional frozen teacher weights folder for REALColon relative-depth consistency",
+    )
+    teacher_consistency_weight: float = Field(
+        default=0.0,
+        description="weight for frozen-teacher relative depth consistency; 0 disables it",
+    )
+    teacher_consistency_mode: TeacherConsistencyMode = Field(
+        default="relative_log_median",
+        description="teacher consistency normalization mode",
     )
 
     # ── C3VDv2 / fine-tuning ──────────────────────────────────────────────────

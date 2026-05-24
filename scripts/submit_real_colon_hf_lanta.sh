@@ -14,6 +14,7 @@
 # Run this with bash on a login/submit node, not with sbatch directly:
 #   bash scripts/submit_real_colon_hf_lanta.sh
 #   ADAPTATION_PRESET=full START_RUN=run_d bash scripts/submit_real_colon_hf_lanta.sh
+#   ADAPTATION_PRESET=teacher_pose_transform START_RUN=run_b bash scripts/submit_real_colon_hf_lanta.sh
 #
 # The login/submit node prefetches the Hugging Face dataset into a shared cache.
 # The SLURM job then runs with HF offline flags and DATA_SOURCE=hf,
@@ -62,8 +63,11 @@ case "$ADAPTATION_PRESET" in
     pose_transform)
         ADAPTATION_TRAINABLE_MODULES="pose_encoder pose transform_encoder transform"
         ;;
+    teacher_pose_transform)
+        ADAPTATION_TRAINABLE_MODULES="pose_encoder pose transform_encoder transform"
+        ;;
     *)
-        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform"
+        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform, teacher_pose_transform"
         exit 1
         ;;
 esac
@@ -76,13 +80,21 @@ export C3VDV2_LOG_DIR="${C3VDV2_LOG_DIR:-$PROJECT_DIR/logs/c3vdv2_hf}"
 case "$START_RUN" in
     run_d)
         DEFAULT_START_WEIGHTS="$C3VDV2_LOG_DIR/stage2_specular_pps/models/weights_best/"
-        DEFAULT_MODEL_NAME="realcolon_run_d_diag"
+        if [ "$ADAPTATION_PRESET" = "pose_transform" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_d_pose_transform"
+        elif [ "$ADAPTATION_PRESET" = "teacher_pose_transform" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_d_teacher_pose"
+        else
+            DEFAULT_MODEL_NAME="realcolon_run_d_diag"
+        fi
         DEFAULT_USE_SPECULAR_NET="1"
         ;;
     run_b)
         DEFAULT_START_WEIGHTS="$C3VDV2_LOG_DIR/stage2_specular/models/weights_best/"
         if [ "$ADAPTATION_PRESET" = "pose_transform" ]; then
             DEFAULT_MODEL_NAME="realcolon_run_b_pose_transform"
+        elif [ "$ADAPTATION_PRESET" = "teacher_pose_transform" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_b_teacher_pose"
         else
             DEFAULT_MODEL_NAME="realcolon_run_b_diag"
         fi
@@ -90,7 +102,13 @@ case "$START_RUN" in
         ;;
     run_a)
         DEFAULT_START_WEIGHTS="$C3VDV2_LOG_DIR/stage2/models/weights_best/"
-        DEFAULT_MODEL_NAME="realcolon_run_a_diag"
+        if [ "$ADAPTATION_PRESET" = "pose_transform" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_a_pose_transform"
+        elif [ "$ADAPTATION_PRESET" = "teacher_pose_transform" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_a_teacher_pose"
+        else
+            DEFAULT_MODEL_NAME="realcolon_run_a_diag"
+        fi
         DEFAULT_USE_SPECULAR_NET="0"
         ;;
     *)
@@ -101,6 +119,10 @@ esac
 
 export LOAD_WEIGHTS_FOLDER="${LOAD_WEIGHTS_FOLDER:-$DEFAULT_START_WEIGHTS}"
 export LOAD_TRAINABLE_WEIGHTS_FOLDER="${LOAD_TRAINABLE_WEIGHTS_FOLDER:-$LOAD_WEIGHTS_FOLDER}"
+if [ "$ADAPTATION_PRESET" = "teacher_pose_transform" ]; then
+    export TEACHER_WEIGHTS_FOLDER="${TEACHER_WEIGHTS_FOLDER:-$LOAD_WEIGHTS_FOLDER}"
+    export TEACHER_CONSISTENCY_WEIGHT="${TEACHER_CONSISTENCY_WEIGHT:-0.5}"
+fi
 export MODEL_NAME="${MODEL_NAME:-$DEFAULT_MODEL_NAME}"
 
 export EPOCHS="${EPOCHS:-1}"
@@ -221,6 +243,8 @@ submit_job() {
     echo "  Start ckpt:   $LOAD_WEIGHTS_FOLDER"
     echo "  Preset:       $ADAPTATION_PRESET"
     echo "  Trainable:    $ADAPTATION_TRAINABLE_MODULES"
+    echo "  Teacher:      ${TEACHER_WEIGHTS_FOLDER:-off}"
+    echo "  Teacher wt:   ${TEACHER_CONSISTENCY_WEIGHT:-0.0}"
     echo "  Run dir:      $LOG_DIR/$MODEL_NAME"
     echo "  Cache marker: $CACHE_READY_MARKER"
     echo ""
@@ -259,6 +283,8 @@ run_slurm_job() {
     echo "  Steps/epoch:  ${STEPS_PER_EPOCH:-full split}"
     echo "  Preset:       $ADAPTATION_PRESET"
     echo "  Trainable:    $ADAPTATION_TRAINABLE_MODULES"
+    echo "  Teacher:      ${TEACHER_WEIGHTS_FOLDER:-off}"
+    echo "  Teacher wt:   ${TEACHER_CONSISTENCY_WEIGHT:-0.0}"
     echo ""
 
     bash scripts/run_finetune_real_colon.sh

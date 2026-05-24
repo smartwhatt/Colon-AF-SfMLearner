@@ -22,6 +22,9 @@
 #
 # For frozen-depth Run B adaptation:
 #   ADAPTATION_PRESET=pose_transform bash scripts/run_finetune_real_colon.sh
+#
+# For frozen-depth adaptation with teacher relative-depth anchoring:
+#   ADAPTATION_PRESET=teacher_pose_transform bash scripts/run_finetune_real_colon.sh
 # =============================================================================
 
 set -e
@@ -69,6 +72,7 @@ SPECULAR_LOSS_WEIGHT="${SPECULAR_LOSS_WEIGHT:-0.05}"
 SPECULAR_THRESHOLD="${SPECULAR_THRESHOLD:-0.98}"
 
 ADAPTATION_PRESET="${ADAPTATION_PRESET:-full}"
+TRAINABLE_MODULES_ENV="${TRAINABLE_MODULES:-}"
 TRAINABLE_MODULES=()
 case "$ADAPTATION_PRESET" in
     full)
@@ -76,11 +80,22 @@ case "$ADAPTATION_PRESET" in
     pose_transform)
         TRAINABLE_MODULES=(pose_encoder pose transform_encoder transform)
         ;;
+    teacher_pose_transform)
+        TRAINABLE_MODULES=(pose_encoder pose transform_encoder transform)
+        : "${TEACHER_WEIGHTS_FOLDER:=$LOAD_WEIGHTS_FOLDER}"
+        : "${TEACHER_CONSISTENCY_WEIGHT:=0.5}"
+        ;;
     *)
-        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform"
+        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform, teacher_pose_transform"
         exit 1
         ;;
 esac
+if [ -n "$TRAINABLE_MODULES_ENV" ]; then
+    read -r -a TRAINABLE_MODULES <<< "$TRAINABLE_MODULES_ENV"
+fi
+TEACHER_WEIGHTS_FOLDER="${TEACHER_WEIGHTS_FOLDER:-}"
+TEACHER_CONSISTENCY_WEIGHT="${TEACHER_CONSISTENCY_WEIGHT:-0.0}"
+TEACHER_CONSISTENCY_MODE="${TEACHER_CONSISTENCY_MODE:-relative_log_median}"
 
 log() { echo -e "\n\033[1;36m>>> $*\033[0m\n"; }
 
@@ -139,6 +154,10 @@ check_data() {
         echo "ERROR: LOAD_TRAINABLE_WEIGHTS_FOLDER does not exist: $LOAD_TRAINABLE_WEIGHTS_FOLDER"
         exit 1
     fi
+    if [ -n "$TEACHER_WEIGHTS_FOLDER" ] && [ ! -d "$TEACHER_WEIGHTS_FOLDER" ]; then
+        echo "ERROR: TEACHER_WEIGHTS_FOLDER does not exist: $TEACHER_WEIGHTS_FOLDER"
+        exit 1
+    fi
 }
 
 run_stage2_adaptation() {
@@ -175,6 +194,12 @@ run_stage2_adaptation() {
     else
         echo "  SpecularNet:  OFF"
     fi
+    if [ -n "$TEACHER_WEIGHTS_FOLDER" ]; then
+        echo "  Teacher:      $TEACHER_WEIGHTS_FOLDER"
+        echo "  Teacher loss: $TEACHER_CONSISTENCY_MODE weight=$TEACHER_CONSISTENCY_WEIGHT"
+    else
+        echo "  Teacher:      OFF"
+    fi
 
     cmd=(
         uv run python train.py
@@ -209,6 +234,14 @@ run_stage2_adaptation() {
         cmd+=(--trainable_modules "${TRAINABLE_MODULES[@]}")
     fi
 
+    if [ -n "$TEACHER_WEIGHTS_FOLDER" ]; then
+        cmd+=(
+            --teacher_weights_folder "$TEACHER_WEIGHTS_FOLDER"
+            --teacher_consistency_weight "$TEACHER_CONSISTENCY_WEIGHT"
+            --teacher_consistency_mode "$TEACHER_CONSISTENCY_MODE"
+        )
+    fi
+
     if [ "$USE_SPECULAR_NET" = "1" ]; then
         cmd+=(
             --use_specular_net
@@ -232,7 +265,7 @@ log "Done"
 echo "  Final weights: $FINAL_WEIGHTS"
 echo "  Best weights:  $BEST_WEIGHTS"
 echo ""
-echo "  C3VDv2 no-collapse check:"
+echo "  C3VDv2 no-collapse check (no median scaling):"
 if [ "$USE_SPECULAR_NET" = "1" ]; then
     echo "  uv run python tools/evaluate_c3vdv2.py \\"
     echo "      --data_source hf \\"
@@ -246,6 +279,24 @@ else
     echo "      --hf_repo_id SmartWhatt/c3vdv2-SfM \\"
     echo "      --hf_split test \\"
     echo "      --weights_folder $FINAL_WEIGHTS"
+fi
+echo ""
+echo "  C3VDv2 relative-depth check (median scaling on):"
+if [ "$USE_SPECULAR_NET" = "1" ]; then
+    echo "  uv run python tools/evaluate_c3vdv2.py \\"
+    echo "      --data_source hf \\"
+    echo "      --hf_repo_id SmartWhatt/c3vdv2-SfM \\"
+    echo "      --hf_split test \\"
+    echo "      --weights_folder $FINAL_WEIGHTS \\"
+    echo "      --median_scaling \\"
+    echo "      --load_specular_weights"
+else
+    echo "  uv run python tools/evaluate_c3vdv2.py \\"
+    echo "      --data_source hf \\"
+    echo "      --hf_repo_id SmartWhatt/c3vdv2-SfM \\"
+    echo "      --hf_split test \\"
+    echo "      --weights_folder $FINAL_WEIGHTS \\"
+    echo "      --median_scaling"
 fi
 echo ""
 echo "  Monitor training:"

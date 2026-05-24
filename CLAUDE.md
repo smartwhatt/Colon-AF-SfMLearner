@@ -6,9 +6,44 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AF-SfMLearner is a self-supervised monocular depth and ego-motion estimation system for endoscopy/colonoscopy video. It implements appearance flow — a brightness/color calibration mechanism — alongside optical flow and standard photometric losses to handle the challenging lighting in endoscopic scenes.
 
+## Active Project Scope
+
+This repo is currently being used for colonoscopy polyp-size research, not generic KITTI/SCARED benchmarking. The immediate research goal is automated metric polyp size estimation from standard monocular colonoscopy video, with no hardware modification and with honest uncertainty/abstention when metric scale is not anchored.
+
+Current research state:
+- **Phase 1 C3VDv2 depth baseline**: Run D (`stage2_specular_pps/weights_best`) is the preferred phantom-depth baseline: SpecularNet + PPS is best on aggregate C3VDv2 HF test metrics.
+- **Active blocker**: REALColon adaptation. Target-only REALColon fine-tuning damaged relative depth or absolute scale. Frozen `pose_transform` preserves the depth prior and is a no-forgetting control, not clinical-domain depth adaptation.
+- **Next long-running task**: Run B teacher-anchored REALColon diagnostic with C3VDv2 median/no-median depth checks, C3VDv2 pose checks, and a fixed REALColon qualitative panel.
+- **Phase 2 metric scale**: Patient video can estimate at most normalized near-light geometry (`beta = b/lambda`) unless an explicit metric anchor is supplied. Do not emit or claim metric polyp size without `ScaleAnchorResolver` or equivalent anchor-gating.
+- **Paper claims**: C3VDv2 depth ablations and the near-light identifiability result are claim-ready. Clinical 10 mm threshold accuracy, Polyp-Size validation, and real clinical metric sizing are blocked.
+
 Key papers:
 - "Self-Supervised Monocular Depth and Ego-Motion Estimation in Endoscopy: Appearance Flow to the Rescue" (Medical Image Analysis 2022)
 - "Self-Supervised Learning for Monocular Depth Estimation on Minimally Invasive Surgery Scenes" (ICRA 2021)
+
+## Wiki Workflow
+
+The project knowledge base is the topic wiki:
+
+```text
+/Users/smartwatt/wiki/topics/colonscopy-polyp-size-research
+```
+
+Read the wiki before making research-direction changes. Primary entry points:
+- `inventory/views/active-actions.md` — blocker-first task list and next long-running job.
+- `wiki/experiments/_index.md` — current empirical state and decisions.
+- `wiki/experiments/c3vdv2-hf-depth-benchmark.md` — canonical C3VDv2 leaderboard.
+- `output/projects/polyp-size-paper/claims-matrix.md` — what can and cannot be claimed in writing.
+- `output/projects/polyp-size-paper/results-register.md` — paper-facing results inventory.
+
+When adding experiment results:
+1. Keep raw evidence immutable: add a raw note under `raw/notes/`.
+2. Add or update a concise experiment card under `wiki/experiments/`.
+3. Update `wiki/experiments/_index.md`; update `c3vdv2-hf-depth-benchmark.md` only for comparable C3VDv2 HF protocol runs.
+4. If the result changes paper claims, update `output/projects/polyp-size-paper/claims-matrix.md` and `results-register.md`.
+5. Append a short entry to the topic `log.md`.
+
+Do not treat repo reports, terminal output, or chat summaries as sufficient provenance once a result matters. Promote them into the wiki.
 
 ## Setup
 
@@ -64,6 +99,34 @@ The old per-mode entry scripts (`train_stage_one.py`, `train_stage_two.py`, `tra
 DATA_PATH=/path/to/C3VDv2 LOG_DIR=logs/c3vdv2 bash scripts/run_finetune_c3vdv2.sh
 ```
 
+**REALColon active recovery diagnostic**:
+```bash
+ADAPTATION_PRESET=teacher_pose_transform START_RUN=run_b \
+EPOCHS=1 STEPS_PER_EPOCH=500 LR=1e-5 \
+MODEL_NAME=realcolon_run_b_teacher_pose_500 \
+bash scripts/submit_real_colon_hf_lanta.sh
+```
+
+Gate every depth-adapting REALColon checkpoint with:
+```bash
+# absolute-scale / no-median check
+uv run python tools/evaluate_c3vdv2.py \
+  --data_source hf --hf_repo_id SmartWhatt/c3vdv2-SfM --hf_split test \
+  --weights_folder <weights> --load_specular_weights
+
+# relative-depth / median-scaled check
+uv run python tools/evaluate_c3vdv2.py \
+  --data_source hf --hf_repo_id SmartWhatt/c3vdv2-SfM --hf_split test \
+  --weights_folder <weights> --median_scaling --load_specular_weights
+
+# pose guardrail
+uv run python tools/evaluate_c3vdv2_pose.py \
+  --data_source hf --hf_repo_id SmartWhatt/c3vdv2-SfM --hf_split test \
+  --weights_folder <weights>
+```
+
+Pass gate for REALColon recovery remains conservative: median-scaled C3VDv2 AbsRel <= 0.18, delta < 1.25 >= 0.75, no severe no-median scale drift, no material pose regression, and no qualitative REALColon collapse.
+
 ## Evaluation & Inference
 
 ```bash
@@ -105,7 +168,7 @@ BaseTrainer                  # shared infra: train loop, val, save/load, geometr
 
 **What each subclass adds:**
 - `StageOneTrainer`: `_predict_positions()` (flow only, no transform/pose)
-- `StageTwoTrainer`: `load_model()` with param freezing; `set_train/eval` for stage-2 model groups
+- `StageTwoTrainer`: `load_model()` with param freezing; `set_train/eval` for stage-2 model groups; optional frozen-teacher relative-depth consistency for REALColon recovery
 - `EndToEndTrainer`: second optimizer, `set_train_0()`, `run_epoch()` with alternating steps, `_predict_position_transform()`
 - `C3VDv2*Trainer`: `build_dataloaders()` using `C3VDv2Dataset`, `_adapt_keys()` (maps dataset keys to trainer tuple keys), supervised losses + weight ramping
 
@@ -155,8 +218,23 @@ Notable non-obvious defaults:
 - `--num_layers 18` — ResNet-18 encoder
 - `--pose_model_type separate_resnet` — separate encoder for pose (vs. shared)
 - `--num_scales 4` — multi-scale losses at scales 0–3
+- `--trainable_modules ...` — optional Stage 2 allowlist; used by `pose_transform` and `teacher_pose_transform`
+- `--teacher_weights_folder`, `--teacher_consistency_weight`, `--teacher_consistency_mode relative_log_median` — opt-in REALColon recovery teacher path; defaults are off and preserve prior behavior
 
 Loss weights (all tunable): `--disparity_smoothness 1e-4`, `--position_smoothness 1e-3`, `--consistency_constraint 0.01`, `--epipolar_constraint 0.01`, `--geometry_constraint 0.01`, `--transform_constraint 0.01`, `--transform_smoothness 0.01`.
+
+## Validation Before Committing
+
+Preferred quick checks after code changes:
+
+```bash
+bash -n scripts/run_finetune_real_colon.sh scripts/submit_real_colon_hf.sh scripts/submit_real_colon_hf_lanta.sh scripts/submit_realcolon_panel_lanta.sh
+.venv/bin/python -m py_compile options.py trainers/stage_two.py trainers/base.py scripts/utils/download_real_colon_to_hf.py
+uv run pytest tests
+git diff --check
+```
+
+Full `uv run pytest` currently collects top-level `test_simple.py`, which imports `matplotlib`; if that dependency is absent, use `uv run pytest tests` for the maintained suite and report the collection limitation.
 
 ## Supervised Fine-tuning Losses (trainers/c3vdv2_losses.py)
 

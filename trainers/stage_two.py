@@ -29,7 +29,7 @@ class PoseBalanceScalar(nn.Module):
     def __init__(self):
         super().__init__()
         self.balance = nn.Parameter(torch.zeros(1))
-from layers import get_smooth_loss, get_smooth_bright
+from layers import disp_to_depth, get_smooth_loss, get_smooth_bright
 from .base import BaseTrainer
 
 
@@ -118,7 +118,33 @@ class StageTwoTrainer(BaseTrainer):
             self.models["pose_balance"] = PoseBalanceScalar().to(self.device)
             self.parameters_to_train += list(self.models["pose_balance"].parameters())
 
+        if self._uses_teacher_consistency():
+            self._build_teacher_models()
+
         self._apply_trainable_module_allowlist()
+
+    def _uses_teacher_consistency(self):
+        return (
+            bool(getattr(self.opt, "teacher_weights_folder", None))
+            and float(getattr(self.opt, "teacher_consistency_weight", 0.0)) > 0.0
+        )
+
+    def _build_teacher_models(self):
+        self.models["teacher_encoder"] = networks.ResnetEncoder(
+            self.opt.num_layers, False
+        ).to(self.device)
+        self.models["teacher_depth"] = networks.DepthDecoder(
+            self.models["teacher_encoder"].num_ch_enc, self.opt.scales
+        ).to(self.device)
+        self._freeze_teacher_models()
+
+    def _freeze_teacher_models(self):
+        for name in ("teacher_encoder", "teacher_depth"):
+            if name not in self.models:
+                continue
+            self.models[name].eval()
+            for param in self.models[name].parameters():
+                param.requires_grad = False
 
     def _trainable_module_allowlist(self):
         modules = getattr(self.opt, "trainable_modules", []) or []
@@ -201,18 +227,34 @@ class StageTwoTrainer(BaseTrainer):
                 for param in self.models[n].parameters():
                     param.requires_grad = self._module_should_train(n)
 
+        self._load_teacher_weights()
         self._apply_trainable_module_allowlist()
+        self._freeze_teacher_models()
 
         print("Adam is randomly initialized")
 
-    def _load_model_weights(self, weights_folder, model_name):
+    def _load_model_weights(self, weights_folder, model_name, weights_name=None):
         import os
-        path = os.path.join(weights_folder, "{}.pth".format(model_name))
+        weights_name = weights_name or model_name
+        path = os.path.join(weights_folder, "{}.pth".format(weights_name))
         model_dict = self.models[model_name].state_dict()
         pretrained_dict = torch.load(path, map_location=self.device)
         pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
         model_dict.update(pretrained_dict)
         self.models[model_name].load_state_dict(model_dict)
+
+    def _load_teacher_weights(self):
+        import os
+
+        if not self._uses_teacher_consistency():
+            return
+        teacher_folder = os.path.expanduser(self.opt.teacher_weights_folder)
+        assert os.path.isdir(teacher_folder), \
+            "Cannot find teacher weights folder {}".format(teacher_folder)
+        print("loading teacher model weights from folder {}".format(teacher_folder))
+        self._load_model_weights(teacher_folder, "teacher_encoder", "encoder")
+        self._load_model_weights(teacher_folder, "teacher_depth", "depth")
+        self._freeze_teacher_models()
 
     def set_train(self):
         if self._uses_trainable_module_allowlist():
@@ -222,16 +264,19 @@ class StageTwoTrainer(BaseTrainer):
                     model.train()
                 else:
                     model.eval()
+            self._freeze_teacher_models()
             return
 
         for name in self._DEFAULT_TRAIN_MODELS:
             if name in self.models:
                 self.models[name].train()
+        self._freeze_teacher_models()
 
     def set_eval(self):
         for name in self._DEFAULT_TRAIN_MODELS:
             if name in self.models:
                 self.models[name].eval()
+        self._freeze_teacher_models()
 
     # ── Forward pass ──────────────────────────────────────────────────────────
 
@@ -352,5 +397,62 @@ class StageTwoTrainer(BaseTrainer):
             )
 
         total_loss /= self.num_scales
+        teacher_loss = self._compute_teacher_consistency_loss(inputs, outputs)
+        if teacher_loss is not None:
+            teacher_weight = float(self.opt.teacher_consistency_weight)
+            teacher_weighted = teacher_weight * teacher_loss
+            total_loss += teacher_weighted
+            losses["loss/teacher_relative_depth"] = teacher_loss
+            losses["loss_weighted/teacher_relative_depth"] = teacher_weighted
         losses["loss"] = total_loss
         return losses
+
+    @staticmethod
+    def relative_log_median(depth, eps=1e-4):
+        z = torch.log(depth.clamp(min=eps))
+        med = z.flatten(1).median(dim=1).values.view(-1, 1, 1, 1)
+        return z - med
+
+    def _compute_teacher_consistency_loss(self, inputs, outputs):
+        if not self._uses_teacher_consistency():
+            return None
+        if self.opt.teacher_consistency_mode != "relative_log_median":
+            raise ValueError(
+                "Unsupported teacher_consistency_mode: {}".format(
+                    self.opt.teacher_consistency_mode
+                )
+            )
+        if "teacher_encoder" not in self.models or "teacher_depth" not in self.models:
+            raise RuntimeError(
+                "Teacher consistency is enabled but teacher models were not built"
+            )
+
+        with torch.no_grad():
+            teacher_features = self.models["teacher_encoder"](
+                inputs[("color_aug", 0, 0)]
+            )
+            teacher_outputs = self.models["teacher_depth"](teacher_features)
+            teacher_disp = teacher_outputs[("disp", 0)]
+            if teacher_disp.shape[2:] != inputs[("color_aug", 0, 0)].shape[2:]:
+                teacher_disp = F.interpolate(
+                    teacher_disp,
+                    [self.opt.height, self.opt.width],
+                    mode="bilinear",
+                    align_corners=False,
+                )
+            _, teacher_depth = disp_to_depth(
+                teacher_disp, self.opt.min_depth, self.opt.max_depth
+            )
+
+        student_depth = outputs[("depth", 0, 0)]
+        if student_depth.shape[2:] != teacher_depth.shape[2:]:
+            student_depth = F.interpolate(
+                student_depth,
+                size=teacher_depth.shape[2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        student_rel = self.relative_log_median(student_depth)
+        teacher_rel = self.relative_log_median(teacher_depth)
+        return F.smooth_l1_loss(student_rel, teacher_rel)
