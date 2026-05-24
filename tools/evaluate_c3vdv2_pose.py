@@ -8,6 +8,35 @@ the same pose input ordering as the trainer:
     f_i = -1: concat(prev, curr) -> gt curr2prev
     f_i =  1: concat(next, curr) -> gt curr2next
 
+Pose naming convention
+----------------------
+The HF dataset fields ``axang_curr2prev`` / ``trans_curr2prev`` encode
+*relative poses* derived from world-to-camera extrinsics::
+
+    T_curr2prev = inv(T_cw_curr) @ T_cw_prev
+    (see colon_datasets.c3vdv2_dataset.relative_pose)
+
+This matrix transforms points **from** the previous frame **into** the current
+frame (prev -> curr).  The naming "curr2prev" means *"pose of prev camera
+expressed in the curr frame"*, **not** "transform from curr to prev".
+
+The model input ``concat(prev, curr)`` predicts the same direction (prev ->
+curr), so the evaluator correctly pairs ``concat(prev, curr)`` with the GT
+``curr2prev`` labels.  This convention is consistent across the codebase:
+
+- ``colon_datasets/c3vdv2_dataset.py`` -- ``relative_pose``
+- ``trainers/base.py`` -- ``predict_poses`` (line 467)
+- ``colon_datasets/hf_triplet_dataset.py`` -- ``_add_pose`` (line 260)
+
+Translation diagnostics
+-----------------------
+GT translation vectors in endoscopic data are often near-zero (camera motion
+between adjacent frames is small).  The ``--min_gt_trans_norm_m`` threshold
+(default 1e-6 m) gates which pairs contribute to the *valid-filtered* cosine
+and magnitude-ratio summaries.  Always check ``translation_diagnostics`` in the
+JSON summary to judge whether these directional metrics are meaningful for a
+given split.
+
 Example:
 
     uv run python tools/evaluate_c3vdv2_pose.py \
@@ -64,6 +93,7 @@ def _translation_metrics(
     pred_trans: torch.Tensor,
     gt_trans: torch.Tensor,
     eps: float = 1e-9,
+    min_gt_norm: float = 1e-6,
 ) -> dict[str, torch.Tensor]:
     diff = pred_trans - gt_trans
     pred_norm = torch.linalg.norm(pred_trans, dim=1)
@@ -73,6 +103,11 @@ def _translation_metrics(
         pred_norm.clamp(min=eps) * gt_norm.clamp(min=eps)
     )
     mag_ratio = pred_norm / gt_norm.clamp(min=eps)
+    gt_valid = gt_norm >= min_gt_norm
+    cosine_valid = cosine.clone()
+    cosine_valid[~gt_valid] = float("nan")
+    mag_ratio_valid = mag_ratio.clone()
+    mag_ratio_valid[~gt_valid] = float("nan")
     return {
         "trans_l2_m": l2,
         "trans_l2_mm": l2 * 1000.0,
@@ -80,6 +115,9 @@ def _translation_metrics(
         "trans_mag_ratio": mag_ratio,
         "pred_trans_norm_m": pred_norm,
         "gt_trans_norm_m": gt_norm,
+        "gt_valid": gt_valid,
+        "trans_cosine_valid": cosine_valid.clamp(-1.0, 1.0),
+        "trans_mag_ratio_valid": mag_ratio_valid,
     }
 
 
@@ -200,6 +238,9 @@ def evaluate(args) -> None:
     sample_seen = 0
 
     pair_specs = [
+        # Each GT field "curr2prev"/"curr2next" is T = inv(T_cw_curr) @ T_cw_other,
+        # i.e. the transform that maps prev/next -> curr.  The model input
+        # concat(source, curr) predicts the same direction.  See module docstring.
         ("prev", "color_prev", "axang_curr2prev", "trans_curr2prev"),
         ("next", "color_next", "axang_curr2next", "trans_curr2next"),
     ]
@@ -221,7 +262,7 @@ def evaluate(args) -> None:
                 pred_ax, pred_tr = _predict_pair(pose_encoder, pose, source, curr)
 
                 rot_deg = _rotation_error_deg(pred_ax, gt_ax)
-                trans = _translation_metrics(pred_tr, gt_tr)
+                trans = _translation_metrics(pred_tr, gt_tr, min_gt_norm=args.min_gt_trans_norm_m)
                 ax_l2 = torch.linalg.norm(pred_ax - gt_ax, dim=1)
 
                 for i in range(batch_size):
@@ -248,11 +289,19 @@ def evaluate(args) -> None:
                         "trans_l2_mm",
                         "trans_cosine",
                         "trans_mag_ratio",
+                        "pred_trans_norm_m",
+                        "gt_trans_norm_m",
                     ):
                         aggregates[f"{label}/{key}"].append(row[key])
                         aggregates[f"all/{key}"].append(row[key])
+                    if trans["gt_valid"][i]:
+                        for vkey in ("trans_cosine_valid", "trans_mag_ratio_valid"):
+                            val = float(trans[vkey][i].cpu())
+                            if math.isfinite(val):
+                                aggregates[f"{label}/{vkey}"].append(val)
+                                aggregates[f"all/{vkey}"].append(val)
 
-    summary = {
+    summary: dict = {
         "hf_repo_id": args.hf_repo_id,
         "hf_split": args.hf_split,
         "weights_folder": args.weights_folder,
@@ -261,6 +310,49 @@ def evaluate(args) -> None:
         "pair_counts": dict(pair_counts),
         "metrics": {key: _summarize(vals) for key, vals in aggregates.items()},
     }
+
+    threshold_m = args.min_gt_trans_norm_m
+    diag: dict = {
+        "threshold_m": threshold_m,
+    }
+    for prefix in ("all", "prev", "next"):
+        gt_key = f"{prefix}/gt_trans_norm_m"
+        pred_key = f"{prefix}/pred_trans_norm_m"
+        cos_key = f"{prefix}/trans_cosine_valid"
+        ratio_key = f"{prefix}/trans_mag_ratio_valid"
+        if gt_key in aggregates:
+            diag[f"{prefix}/gt_trans_norm_m"] = _summarize(aggregates[gt_key])
+        if pred_key in aggregates:
+            diag[f"{prefix}/pred_trans_norm_m"] = _summarize(aggregates[pred_key])
+        if cos_key in aggregates:
+            diag[f"{prefix}/trans_cosine_valid"] = _summarize(aggregates[cos_key])
+        if ratio_key in aggregates:
+            diag[f"{prefix}/trans_mag_ratio_valid"] = _summarize(aggregates[ratio_key])
+
+    below_counts: dict[str, dict[str, int | float]] = {}
+    total_below = 0
+    for label in ("prev", "next"):
+        gt_key = f"{label}/gt_trans_norm_m"
+        total_key = f"{label}/trans_l2_mm"
+        gt_vals = aggregates.get(gt_key, [])
+        total_vals = aggregates.get(total_key, [])
+        n_total = len(total_vals)
+        n_below = sum(1 for v in gt_vals if v < threshold_m)
+        total_below += n_below
+        pct = (n_below / n_total * 100.0) if n_total > 0 else 0.0
+        below_counts[label] = {"count": n_below, "total": n_total, "pct_below_threshold": round(pct, 2)}
+    diag["pairs_below_threshold"] = below_counts
+
+    total_pairs = len(rows)
+    if total_pairs > 0 and total_below / total_pairs > 0.5:
+        diag["warning"] = (
+            f"More than 50% of pose pairs ({total_below}/{total_pairs}) have "
+            f"gt_trans_norm_m < {threshold_m}. Trans cosine and magnitude ratio "
+            f"are unreliable for these pairs. Prefer rotation error and the "
+            f"valid-filtered translation diagnostics for model selection."
+        )
+
+    summary["translation_diagnostics"] = diag
 
     print("========== C3VDv2 Pose Evaluation ==========")
     print(f"  Samples in split:    {sample_count}")
@@ -289,6 +381,38 @@ def evaluate(args) -> None:
             f"  Trans mag ratio: median {ratio['median']:.4f} | "
             f"p90 {ratio['p90']:.4f}"
         )
+    print("--- Translation Diagnostics ---")
+    print(f"  Threshold (min_gt_trans_norm_m): {threshold_m:.2e} m")
+    for prefix in ("all", "prev", "next"):
+        gt_key = f"{prefix}/gt_trans_norm_m"
+        pred_key = f"{prefix}/pred_trans_norm_m"
+        cos_key = f"{prefix}/trans_cosine_valid"
+        if gt_key not in aggregates:
+            continue
+        gt_s = _summarize(aggregates[gt_key])
+        pred_s = _summarize(aggregates[pred_key])
+        print(
+            f"  {prefix} gt_trans_norm_m:    mean {gt_s['mean']:.6f} | "
+            f"median {gt_s['median']:.6f} | p90 {gt_s['p90']:.6f}"
+        )
+        print(
+            f"  {prefix} pred_trans_norm_m:  mean {pred_s['mean']:.6f} | "
+            f"median {pred_s['median']:.6f} | p90 {pred_s['p90']:.6f}"
+        )
+        bc = below_counts.get(prefix, {})
+        if bc:
+            print(
+                f"  {prefix} pairs below threshold: {bc.get('count', '?')}/"
+                f"{bc.get('total', '?')} ({bc.get('pct_below_threshold', '?')}%)"
+            )
+        if cos_key in aggregates:
+            cos_v = _summarize(aggregates[cos_key])
+            print(
+                f"  {prefix} trans_cosine (valid only): mean {cos_v['mean']:.4f} | "
+                f"median {cos_v['median']:.4f}"
+            )
+    if "warning" in diag:
+        print(f"  WARNING: {diag['warning']}")
     print("============================================\n")
 
     _write_outputs(args, rows, summary)
@@ -317,6 +441,9 @@ def main() -> None:
     parser.add_argument("--num_layers", type=int, default=18)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max_batches", type=int, default=None)
+    parser.add_argument("--min_gt_trans_norm_m", type=float, default=1e-6,
+                        help="Minimum GT translation norm (m) for valid cosine/magnitude-ratio. "
+                             "Pairs below this threshold are excluded from valid-filtered summaries.")
     parser.add_argument("--metrics_out", default=None)
     parser.add_argument("--summary_out", default=None)
     parser.add_argument("--cpu", action="store_true")
