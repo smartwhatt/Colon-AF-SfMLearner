@@ -1,0 +1,179 @@
+{
+  "hf_repo_id": "SmartWhatt/c3vdv2-SfM",
+  "hf_split": "test",
+  "metrics": {
+    "all/axisangle_l2": {
+      "mean": 0.0017224236474907893,
+      "median": 0.0009837994584813714,
+      "p90": 0.003467480419203639
+    },
+    "all/gt_trans_norm_m": {
+      "mean": 4.538803937585336e-20,
+      "median": 0.0,
+      "p90": 2.389264411956023e-19
+    },
+    "all/pred_trans_norm_m": {
+      "mean": 0.000229149494743531,
+      "median": 0.00016178007354028523,
+      "p90": 0.0005048412422183901
+    },
+    "all/rot_error_deg": {
+      "mean": 0.09643488207137227,
+      "median": 0.05595291033387184,
+      "p90": 0.19782350957393646
+    },
+    "all/trans_cosine": {
+      "mean": -1.1599114129770398e-11,
+      "median": 0.0,
+      "p90": 0.0
+    },
+    "all/trans_l2_m": {
+      "mean": 0.000229149494743531,
+      "median": 0.00016178007354028523,
+      "p90": 0.0005048412422183901
+    },
+    "all/trans_l2_mm": {
+      "mean": 0.22914949467589177,
+      "median": 0.16178007423877716,
+      "p90": 0.5048412382602692
+    },
+    "all/trans_mag_ratio": {
+      "mean": 229149.50121108541,
+      "median": 161780.078125,
+      "p90": 504841.265625
+    },
+    "next/axisangle_l2": {
+      "mean": 0.0017101239816544015,
+      "median": 0.0009842325234785676,
+      "p90": 0.0033945242408663042
+    },
+    "next/gt_trans_norm_m": {
+      "mean": 4.538803937585336e-20,
+      "median": 0.0,
+      "p90": 2.3883265442377576e-19
+    },
+    "next/pred_trans_norm_m": {
+      "mean": 0.00022739618489108748,
+      "median": 0.00015834330406505615,
+      "p90": 0.0005056037101894618
+    },
+    "next/rot_error_deg": {
+      "mean": 0.09584604983855032,
+      "median": 0.05595291033387184,
+      "p90": 0.19382666051387787
+    },
+    "next/trans_cosine": {
+      "mean": -1.0675497139285104e-11,
+      "median": 0.0,
+      "p90": 0.0
+    },
+    "next/trans_l2_m": {
+      "mean": 0.00022739618489108748,
+      "median": 0.00015834330406505615,
+      "p90": 0.0005056037101894618
+    },
+    "next/trans_l2_mm": {
+      "mean": 0.2273961848824564,
+      "median": 0.15834330022335052,
+      "p90": 0.5056037187576294
+    },
+    "next/trans_mag_ratio": {
+      "mean": 227396.19123134195,
+      "median": 158343.3125,
+      "p90": 505603.73750000005
+    },
+    "prev/axisangle_l2": {
+      "mean": 0.0017347233133271772,
+      "median": 0.0009834682568907738,
+      "p90": 0.0035191458649933343
+    },
+    "prev/gt_trans_norm_m": {
+      "mean": 4.538803937585336e-20,
+      "median": 0.0,
+      "p90": 2.3883265442377576e-19
+    },
+    "prev/pred_trans_norm_m": {
+      "mean": 0.00023090280459597451,
+      "median": 0.00016478262841701508,
+      "p90": 0.0005039552808739245
+    },
+    "prev/rot_error_deg": {
+      "mean": 0.09702371430419422,
+      "median": 0.05595291033387184,
+      "p90": 0.20174118876457214
+    },
+    "prev/trans_cosine": {
+      "mean": -1.2522731120255692e-11,
+      "median": 0.0,
+      "p90": 0.0
+    },
+    "prev/trans_l2_m": {
+      "mean": 0.00023090280459597451,
+      "median": 0.00016478262841701508,
+      "p90": 0.0005039552808739245
+    },
+    "prev/trans_l2_mm": {
+      "mean": 0.23090280446932715,
+      "median": 0.16478262841701508,
+      "p90": 0.5039552927017212
+    },
+    "prev/trans_mag_ratio": {
+      "mean": 230902.81119082888,
+      "median": 164782.640625,
+      "p90": 503955.3
+    }
+  },
+  "pair_counts": {
+    "next": 16373,
+    "prev": 16373
+  },
+  "pose_pairs_evaluated": 32746,
+  "samples_in_split": 16373,
+  "translation_diagnostics": {
+    "all/gt_trans_norm_m": {
+      "mean": 4.538803937585336e-20,
+      "median": 0.0,
+      "p90": 2.389264411956023e-19
+    },
+    "all/pred_trans_norm_m": {
+      "mean": 0.000229149494743531,
+      "median": 0.00016178007354028523,
+      "p90": 0.0005048412422183901
+    },
+    "next/gt_trans_norm_m": {
+      "mean": 4.538803937585336e-20,
+      "median": 0.0,
+      "p90": 2.3883265442377576e-19
+    },
+    "next/pred_trans_norm_m": {
+      "mean": 0.00022739618489108748,
+      "median": 0.00015834330406505615,
+      "p90": 0.0005056037101894618
+    },
+    "pairs_below_threshold": {
+      "next": {
+        "count": 16373,
+        "pct_below_threshold": 100.0,
+        "total": 16373
+      },
+      "prev": {
+        "count": 16373,
+        "pct_below_threshold": 100.0,
+        "total": 16373
+      }
+    },
+    "prev/gt_trans_norm_m": {
+      "mean": 4.538803937585336e-20,
+      "median": 0.0,
+      "p90": 2.3883265442377576e-19
+    },
+    "prev/pred_trans_norm_m": {
+      "mean": 0.00023090280459597451,
+      "median": 0.00016478262841701508,
+      "p90": 0.0005039552808739245
+    },
+    "threshold_m": 1e-06,
+    "warning": "More than 50% of pose pairs (32746/32746) have gt_trans_norm_m < 1e-06. Trans cosine and magnitude ratio are unreliable for these pairs. Prefer rotation error and the valid-filtered translation diagnostics for model selection."
+  },
+  "weights_folder": "logs/c3vdv2_hf/stage2_specular_pps/models/weights_best"
+}
