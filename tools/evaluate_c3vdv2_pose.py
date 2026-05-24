@@ -14,7 +14,8 @@ Example:
         --data_source hf \
         --hf_repo_id SmartWhatt/c3vdv2-SfM \
         --hf_split test \
-        --weights_folder logs/c3vdv2_hf/stage2_specular_pps/models/weights_best
+        --weights_folder logs/c3vdv2_hf/stage2_specular_pps/models/weights_best \
+        --num_workers 0
 """
 
 from __future__ import annotations
@@ -51,8 +52,8 @@ def _to_vec3(value: torch.Tensor) -> torch.Tensor:
 
 def _rotation_error_deg(pred_axang: torch.Tensor, gt_axang: torch.Tensor) -> torch.Tensor:
     zeros = torch.zeros_like(pred_axang)
-    pred_T = transformation_from_parameters(pred_axang, zeros)
-    gt_T = transformation_from_parameters(gt_axang, zeros)
+    pred_T = transformation_from_parameters(pred_axang.unsqueeze(1), zeros.unsqueeze(1))
+    gt_T = transformation_from_parameters(gt_axang.unsqueeze(1), zeros.unsqueeze(1))
     rel_R = torch.matmul(pred_T[:, :3, :3], gt_T[:, :3, :3].transpose(1, 2))
     trace = rel_R[:, 0, 0] + rel_R[:, 1, 1] + rel_R[:, 2, 2]
     cos_theta = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0)
@@ -304,7 +305,15 @@ def main() -> None:
     parser.add_argument("--height", type=int, default=256)
     parser.add_argument("--width", type=int, default=320)
     parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=0,
+        help=(
+            "DataLoader workers. Default 0 avoids Docker/Lanta /dev/shm "
+            "allocation failures during HF image collation."
+        ),
+    )
     parser.add_argument("--num_layers", type=int, default=18)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max_batches", type=int, default=None)
