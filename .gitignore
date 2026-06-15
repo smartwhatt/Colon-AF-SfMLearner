@@ -9,6 +9,8 @@ logs/
 
 .env
 
+.DS_Store
+
 skills/
 reports/
 outputs/
