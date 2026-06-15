@@ -1,3 +1,4 @@
 from .c3vdv2_dataset import C3VDv2Dataset
+from .polysense3d_sparse_dataset import PolypSense3DSparseDepthDataset
 from .scared_dataset import SCAREDRAWDataset
 from .real_colon_dataset import REALColonDataset
