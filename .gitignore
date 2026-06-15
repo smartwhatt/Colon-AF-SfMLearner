@@ -8,3 +8,8 @@ model/
 logs/
 
 .env
+
+skills/
+reports/
+outputs/
+.codex/
