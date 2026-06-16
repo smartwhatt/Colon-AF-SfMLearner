@@ -98,6 +98,19 @@ def _metrics_from_arrays(pred_mm: Iterable[float], truth_mm: Iterable[float]) ->
     }
 
 
+def _median_scaled_metrics_from_arrays(
+    pred_mm: Iterable[float],
+    truth_mm: Iterable[float],
+) -> tuple[float, dict[str, float]]:
+    pred = np.asarray(list(pred_mm), dtype=np.float64)
+    truth = np.asarray(list(truth_mm), dtype=np.float64)
+    if pred.size == 0:
+        return float("nan"), _metrics_from_arrays([], [])
+    eps = 1e-8
+    scale = float(np.median(np.maximum(truth, eps) / np.maximum(pred, eps)))
+    return scale, _metrics_from_arrays(pred * scale, truth)
+
+
 def _floatify(row: dict) -> dict:
     out = {}
     for key, value in row.items():
@@ -132,6 +145,13 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
         for row in rows:
             json.dump(_floatify(row), f, sort_keys=True)
             f.write("\n")
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        json.dump(_floatify(payload), f, indent=2, sort_keys=True)
+        f.write("\n")
 
 
 def _rgb_tensor_to_bgr(tensor: torch.Tensor) -> np.ndarray:
@@ -256,6 +276,23 @@ def _save_topk_artifacts(
         f.write("\n")
 
 
+def _paper_depth_all_rows(frame_rows: list[dict], *, paper_num_points: int) -> list[dict]:
+    out = []
+    for row in frame_rows:
+        paper_values = [row[f"pred{i}_mm"] for i in range(1, paper_num_points + 1)]
+        out.append(
+            {
+                "id": row["sample_id"],
+                **{f"pred{i}": value for i, value in enumerate(paper_values, start=1)},
+                "gt": row["gt_depth_mm"],
+                "MAE": row["paper_mae_mm"],
+                "abs.REL": row["paper_abs_rel"],
+                "RMSE": row["paper_rmse_mm"],
+            }
+        )
+    return out
+
+
 def _official_group_rows(frame_rows: list[dict]) -> list[dict]:
     groups: dict[str, list[dict]] = defaultdict(list)
     for row in frame_rows:
@@ -264,8 +301,12 @@ def _official_group_rows(frame_rows: list[dict]) -> list[dict]:
     out = []
     for group_id in sorted(groups):
         rows = sorted(groups[group_id], key=lambda row: row["sample_id"])
-        selected = sorted(rows, key=lambda row: row["mae_mm"])[:2] if len(rows) > 2 else rows
-        pred = float(np.mean([row["pred_mean_mm"] for row in selected]))
+        selected = (
+            sorted(rows, key=lambda row: row["paper_mae_mm"])[:2]
+            if len(rows) > 2
+            else rows
+        )
+        pred = float(np.mean([row["paper_pred_mean_mm"] for row in selected]))
         truth = float(np.mean([row["gt_depth_mm"] for row in selected]))
         metrics = _metrics_from_arrays([pred], [truth])
         out.append(
@@ -285,6 +326,46 @@ def _official_group_rows(frame_rows: list[dict]) -> list[dict]:
             }
         )
     return out
+
+
+def _paper_eval_metrics(group_rows: list[dict]) -> dict[str, float]:
+    metrics = _metrics_from_arrays(
+        [row["pred_mm"] for row in group_rows],
+        [row["truth_mm"] for row in group_rows],
+    )
+    return {
+        "count": metrics["count"],
+        "rmse": metrics["rmse_mm"],
+        "mae": metrics["mae_mm"],
+        "absrel": metrics["abs_rel"],
+        "log10": metrics["log10"],
+        "a1_percent": metrics["a1"] * 100.0,
+        "a2_percent": metrics["a2"] * 100.0,
+        "pred_mean_mm": metrics["pred_mean_mm"],
+        "truth_mean_mm": metrics["truth_mean_mm"],
+    }
+
+
+def _median_scaled_group_rows(group_rows: list[dict]) -> tuple[float, list[dict]]:
+    pred = np.asarray([row["pred_mm"] for row in group_rows], dtype=np.float64)
+    truth = np.asarray([row["truth_mm"] for row in group_rows], dtype=np.float64)
+    scale = float(np.median(np.maximum(truth, 1e-8) / np.maximum(pred, 1e-8)))
+    rows = []
+    for row in group_rows:
+        scaled_pred = float(row["pred_mm"] * scale)
+        metrics = _metrics_from_arrays([scaled_pred], [row["truth_mm"]])
+        scaled_row = dict(row)
+        scaled_row["raw_pred_mm"] = row["pred_mm"]
+        scaled_row["pred_mm"] = scaled_pred
+        scaled_row["median_scale"] = scale
+        scaled_row["mae_mm"] = metrics["mae_mm"]
+        scaled_row["rmse_mm"] = metrics["rmse_mm"]
+        scaled_row["abs_rel"] = metrics["abs_rel"]
+        scaled_row["log10"] = metrics["log10"]
+        scaled_row["a1"] = metrics["a1"]
+        scaled_row["a2"] = metrics["a2"]
+        rows.append(scaled_row)
+    return scale, rows
 
 
 def _write_summary_md(path: Path, summary: dict) -> None:
@@ -323,8 +404,43 @@ def _write_summary_md(path: Path, summary: dict) -> None:
             f"- Per-point JSONL: `{summary['outputs']['per_point_jsonl']}`",
             f"- Per-frame JSONL: `{summary['outputs']['per_frame_jsonl']}`",
             f"- Official group CSV: `{summary['outputs']['official_group_csv']}`",
+            f"- Paper-style depth_all CSV: `{summary['outputs']['paper_depth_all_csv']}`",
+            f"- Paper-style depth_summary CSV: `{summary['outputs']['paper_depth_summary_csv']}`",
+            f"- Paper-style eval JSON: `{summary['outputs']['paper_depth_eval_json']}`",
         ]
     )
+    paper = summary["polysense3d_paper_style"]
+    lines.extend(
+        [
+            "",
+            "## PolypSense3D Paper-Style Result",
+            "",
+            "Raw metric depth, no median scaling.",
+            "",
+            "| Count | MAE mm | RMSE mm | AbsRel | log10 | a1 % | a2 % |",
+            "|---:|---:|---:|---:|---:|---:|---:|",
+            "| {count:.0f} | {mae:.4f} | {rmse:.4f} | {absrel:.4f} | "
+            "{log10:.4f} | {a1_percent:.4f} | {a2_percent:.4f} |".format(
+                **paper["raw_metrics"],
+            ),
+        ]
+    )
+    if "median_scaled_metrics" in paper:
+        lines.extend(
+            [
+                "",
+                "## Median-Scaled Diagnostic",
+                "",
+                f"- Global official-group median scale: {paper['median_scale']:.6f}",
+                "",
+                "| Count | MAE mm | RMSE mm | AbsRel | log10 | a1 % | a2 % |",
+                "|---:|---:|---:|---:|---:|---:|---:|",
+                "| {count:.0f} | {mae:.4f} | {rmse:.4f} | {absrel:.4f} | "
+                "{log10:.4f} | {a1_percent:.4f} | {a2_percent:.4f} |".format(
+                    **paper["median_scaled_metrics"],
+                ),
+            ]
+        )
     if summary["dataset"]["ignored_labels"]:
         lines.extend(["", "## Ignored Labels", ""])
         for label, count in sorted(summary["dataset"]["ignored_labels"].items()):
@@ -372,10 +488,26 @@ def evaluate(args) -> None:
                 radius_px=args.sample_radius_px,
             )
             pred_values_mm = pred_values_m.astype(np.float64) * 1000.0
+            if len(pred_values_mm) < args.paper_num_points:
+                raise ValueError(
+                    f"{sample['sample_id']} has {len(pred_values_mm)} value point(s), "
+                    f"but paper-style depth evaluation needs {args.paper_num_points}."
+                )
             gt_mm = float(sample["gt_depth_mm"])
             truth_values_mm = np.full_like(pred_values_mm, gt_mm, dtype=np.float64)
 
             point_metrics = _metrics_from_arrays(pred_values_mm, truth_values_mm)
+            paper_pred_values_mm = pred_values_mm[: args.paper_num_points]
+            paper_truth_values_mm = np.full_like(
+                paper_pred_values_mm,
+                gt_mm,
+                dtype=np.float64,
+            )
+            paper_point_metrics = _metrics_from_arrays(
+                paper_pred_values_mm,
+                paper_truth_values_mm,
+            )
+            paper_pred_mean_mm = float(np.mean(paper_pred_values_mm))
             pred_mean_mm = float(np.mean(pred_values_mm))
             pred_median_mm = float(np.median(pred_values_mm))
             frame_metric_on_mean = _metrics_from_arrays([pred_mean_mm], [gt_mm])
@@ -420,6 +552,15 @@ def evaluate(args) -> None:
                     "pred_median_mm": pred_median_mm,
                     "pred_min_mm": float(np.min(pred_values_mm)),
                     "pred_max_mm": float(np.max(pred_values_mm)),
+                    **{
+                        f"pred{i}_mm": float(value)
+                        for i, value in enumerate(paper_pred_values_mm, start=1)
+                    },
+                    "paper_num_points": int(args.paper_num_points),
+                    "paper_pred_mean_mm": paper_pred_mean_mm,
+                    "paper_mae_mm": float(paper_point_metrics["mae_mm"]),
+                    "paper_rmse_mm": float(paper_point_metrics["rmse_mm"]),
+                    "paper_abs_rel": float(paper_point_metrics["abs_rel"]),
                     "point_mae_mean_mm": float(point_metrics["mae_mm"]),
                     "mae_mm": float(frame_metric_on_mean["mae_mm"]),
                     "rmse_mm": float(frame_metric_on_mean["rmse_mm"]),
@@ -442,6 +583,11 @@ def evaluate(args) -> None:
                 }
 
     official_rows = _official_group_rows(frame_rows)
+    paper_depth_all_rows = _paper_depth_all_rows(
+        frame_rows,
+        paper_num_points=args.paper_num_points,
+    )
+    paper_metrics = _paper_eval_metrics(official_rows)
 
     all_points_metrics = _metrics_from_arrays(
         [row["pred_depth_mm"] for row in point_rows],
@@ -462,6 +608,9 @@ def evaluate(args) -> None:
     per_frame_jsonl = out_dir / "per_frame_metrics.jsonl"
     official_csv = out_dir / "official_group_summary.csv"
     official_jsonl = out_dir / "official_group_summary.jsonl"
+    paper_depth_all_csv = out_dir / "paper_depth_all.csv"
+    paper_depth_summary_csv = out_dir / "paper_depth_summary.csv"
+    paper_depth_eval_json = out_dir / "paper_depth_eval_summary.json"
 
     _write_csv(per_point_csv, point_rows)
     _write_jsonl(per_point_jsonl, point_rows)
@@ -469,6 +618,89 @@ def evaluate(args) -> None:
     _write_jsonl(per_frame_jsonl, frame_rows)
     _write_csv(official_csv, official_rows)
     _write_jsonl(official_jsonl, official_rows)
+    _write_csv(paper_depth_all_csv, paper_depth_all_rows)
+    _write_csv(
+        paper_depth_summary_csv,
+        [
+            {
+                "id": row["group_id"],
+                "pred": row["pred_mm"],
+                "truth": row["truth_mm"],
+            }
+            for row in official_rows
+        ],
+    )
+    _write_json(paper_depth_eval_json, paper_metrics)
+
+    paper_style_summary = {
+        "protocol": "polysense3d_official_depth_raw",
+        "median_scaling": False,
+        "paper_num_points": args.paper_num_points,
+        "raw_metrics": paper_metrics,
+    }
+    median_scaled_outputs = {}
+    median_scaled_scope_metrics = {}
+    if args.median_scaling:
+        official_scale, official_scaled_rows = _median_scaled_group_rows(official_rows)
+        official_scaled_metrics = _paper_eval_metrics(official_scaled_rows)
+        paper_depth_summary_scaled_csv = out_dir / "paper_depth_summary_median_scaled.csv"
+        paper_depth_eval_scaled_json = out_dir / "paper_depth_eval_median_scaled_summary.json"
+        official_group_scaled_csv = out_dir / "official_group_summary_median_scaled.csv"
+        official_group_scaled_jsonl = out_dir / "official_group_summary_median_scaled.jsonl"
+        _write_csv(
+            paper_depth_summary_scaled_csv,
+            [
+                {
+                    "id": row["group_id"],
+                    "pred": row["pred_mm"],
+                    "truth": row["truth_mm"],
+                    "median_scale": row["median_scale"],
+                    "raw_pred": row["raw_pred_mm"],
+                }
+                for row in official_scaled_rows
+            ],
+        )
+        _write_json(paper_depth_eval_scaled_json, official_scaled_metrics)
+        _write_csv(official_group_scaled_csv, official_scaled_rows)
+        _write_jsonl(official_group_scaled_jsonl, official_scaled_rows)
+
+        all_points_scale, all_points_scaled_metrics = _median_scaled_metrics_from_arrays(
+            [row["pred_depth_mm"] for row in point_rows],
+            [row["gt_depth_mm"] for row in point_rows],
+        )
+        frame_scale, frame_scaled_metrics = _median_scaled_metrics_from_arrays(
+            [row["pred_mean_mm"] for row in frame_rows],
+            [row["gt_depth_mm"] for row in frame_rows],
+        )
+        median_scaled_scope_metrics = {
+            "all_points": {
+                "median_scale": all_points_scale,
+                **all_points_scaled_metrics,
+            },
+            "frame_means": {
+                "median_scale": frame_scale,
+                **frame_scaled_metrics,
+            },
+            "official_groups": {
+                "median_scale": official_scale,
+                **_metrics_from_arrays(
+                    [row["pred_mm"] for row in official_scaled_rows],
+                    [row["truth_mm"] for row in official_scaled_rows],
+                ),
+            },
+        }
+        median_scaled_outputs = {
+            "paper_depth_summary_csv": str(paper_depth_summary_scaled_csv),
+            "paper_depth_eval_json": str(paper_depth_eval_scaled_json),
+            "official_group_csv": str(official_group_scaled_csv),
+            "official_group_jsonl": str(official_group_scaled_jsonl),
+        }
+        paper_style_summary.update(
+            {
+                "median_scale": official_scale,
+                "median_scaled_metrics": official_scaled_metrics,
+            }
+        )
 
     if args.topk > 0:
         _save_topk_artifacts(
@@ -489,6 +721,7 @@ def evaluate(args) -> None:
         "min_depth": args.min_depth,
         "max_depth": args.max_depth,
         "sample_radius_px": args.sample_radius_px,
+        "median_scaling": bool(args.median_scaling),
         "dataset": {
             "frames": len(frame_rows),
             "points": len(point_rows),
@@ -501,6 +734,8 @@ def evaluate(args) -> None:
             "frame_means": frame_mean_metrics,
             "official_groups": official_metrics,
         },
+        "median_scaled_metrics": median_scaled_scope_metrics,
+        "polysense3d_paper_style": paper_style_summary,
         "outputs": {
             "per_point_csv": str(per_point_csv),
             "per_point_jsonl": str(per_point_jsonl),
@@ -508,6 +743,10 @@ def evaluate(args) -> None:
             "per_frame_jsonl": str(per_frame_jsonl),
             "official_group_csv": str(official_csv),
             "official_group_jsonl": str(official_jsonl),
+            "paper_depth_all_csv": str(paper_depth_all_csv),
+            "paper_depth_summary_csv": str(paper_depth_summary_csv),
+            "paper_depth_eval_json": str(paper_depth_eval_json),
+            "median_scaled": median_scaled_outputs,
         },
     }
 
@@ -537,6 +776,24 @@ def evaluate(args) -> None:
             f"AbsRel={metrics['abs_rel']:.4f}  "
             f"a1={metrics['a1']:.4f}"
         )
+    print("")
+    print("  PolypSense3D paper-style raw official groups:")
+    print(
+        f"    MAE={paper_metrics['mae']:.4f} mm  "
+        f"RMSE={paper_metrics['rmse']:.4f} mm  "
+        f"AbsRel={paper_metrics['absrel']:.4f}  "
+        f"a1={paper_metrics['a1_percent']:.4f}%"
+    )
+    if args.median_scaling:
+        scaled = paper_style_summary["median_scaled_metrics"]
+        print("  Median-scaled official groups:")
+        print(
+            f"    scale={paper_style_summary['median_scale']:.6f}  "
+            f"MAE={scaled['mae']:.4f} mm  "
+            f"RMSE={scaled['rmse']:.4f} mm  "
+            f"AbsRel={scaled['absrel']:.4f}  "
+            f"a1={scaled['a1_percent']:.4f}%"
+        )
     if ignored_labels:
         print(f"  Ignored labels:     {dict(ignored_labels)}")
     print("==========================================================\n")
@@ -559,6 +816,20 @@ def main() -> None:
         type=int,
         default=0,
         help="Median-sample a square patch around each point; 0 uses nearest point.",
+    )
+    parser.add_argument(
+        "--paper_num_points",
+        type=int,
+        default=3,
+        help="Number of LabelMe value points used for PolypSense3D paper-style pred columns.",
+    )
+    parser.add_argument(
+        "--median_scaling",
+        action="store_true",
+        help=(
+            "Also report one global official-group median-scaled diagnostic. "
+            "Raw PolypSense3D paper-style metrics remain unchanged."
+        ),
     )
     parser.add_argument("--topk", type=int, default=25)
     parser.add_argument("--depth_vis_min", type=float, default=0.001)

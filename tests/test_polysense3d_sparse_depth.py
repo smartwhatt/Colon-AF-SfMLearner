@@ -22,6 +22,7 @@ from colon_datasets.polysense3d_sparse_dataset import (
 from tools.evaluate_polysense3d_sparse_depth import (
     _metrics_from_arrays,
     _official_group_rows,
+    _paper_eval_metrics,
 )
 
 
@@ -184,10 +185,34 @@ def test_sparse_metrics_and_official_grouping():
     assert metrics["rmse_mm"] > metrics["mae_mm"]
 
     frame_rows = [
-        {"sample_id": "0001_0001", "group_id": "0001", "pred_mean_mm": 10.0, "gt_depth_mm": 10.0, "mae_mm": 0.0},
-        {"sample_id": "0001_0002", "group_id": "0001", "pred_mean_mm": 12.0, "gt_depth_mm": 10.0, "mae_mm": 2.0},
-        {"sample_id": "0001_0003", "group_id": "0001", "pred_mean_mm": 20.0, "gt_depth_mm": 10.0, "mae_mm": 10.0},
-        {"sample_id": "0002_0001", "group_id": "0002", "pred_mean_mm": 8.0, "gt_depth_mm": 10.0, "mae_mm": 2.0},
+        {
+            "sample_id": "0001_0001",
+            "group_id": "0001",
+            "paper_pred_mean_mm": 10.0,
+            "gt_depth_mm": 10.0,
+            "paper_mae_mm": 0.0,
+        },
+        {
+            "sample_id": "0001_0002",
+            "group_id": "0001",
+            "paper_pred_mean_mm": 12.0,
+            "gt_depth_mm": 10.0,
+            "paper_mae_mm": 2.0,
+        },
+        {
+            "sample_id": "0001_0003",
+            "group_id": "0001",
+            "paper_pred_mean_mm": 9.5,
+            "gt_depth_mm": 10.0,
+            "paper_mae_mm": 10.0,
+        },
+        {
+            "sample_id": "0002_0001",
+            "group_id": "0002",
+            "paper_pred_mean_mm": 8.0,
+            "gt_depth_mm": 10.0,
+            "paper_mae_mm": 2.0,
+        },
     ]
 
     rows = _official_group_rows(frame_rows)
@@ -195,6 +220,10 @@ def test_sparse_metrics_and_official_grouping():
     assert len(rows) == 2
     assert rows[0]["selected_sample_ids"] == "0001_0001,0001_0002"
     assert rows[0]["pred_mm"] == pytest.approx(11.0)
+
+    paper_metrics = _paper_eval_metrics(rows)
+    assert paper_metrics["mae"] == pytest.approx(1.5)
+    assert paper_metrics["a1_percent"] == pytest.approx(50.0)
 
 
 def test_evaluator_writes_outputs_with_mocked_model(tmp_path, monkeypatch):
@@ -225,6 +254,8 @@ def test_evaluator_writes_outputs_with_mocked_model(tmp_path, monkeypatch):
             "min_depth": 0.001,
             "max_depth": 0.1,
             "sample_radius_px": 0,
+            "paper_num_points": 3,
+            "median_scaling": True,
             "topk": 1,
             "depth_vis_min": 0.001,
             "depth_vis_max": 0.1,
@@ -239,6 +270,13 @@ def test_evaluator_writes_outputs_with_mocked_model(tmp_path, monkeypatch):
     assert summary["dataset"]["frames"] == 2
     assert summary["dataset"]["points"] == 6
     assert summary["metrics"]["all_points"]["mae_mm"] == pytest.approx(0.5)
+    assert summary["polysense3d_paper_style"]["raw_metrics"]["mae"] == pytest.approx(0.5)
+    assert "median_scaled_metrics" in summary["polysense3d_paper_style"]
     assert (out_dir / "per_point_metrics.csv").is_file()
     assert (out_dir / "official_group_summary.csv").is_file()
+    assert (out_dir / "paper_depth_all.csv").is_file()
+    assert (out_dir / "paper_depth_summary.csv").is_file()
+    assert (out_dir / "paper_depth_eval_summary.json").is_file()
+    assert (out_dir / "paper_depth_summary_median_scaled.csv").is_file()
+    assert (out_dir / "paper_depth_eval_median_scaled_summary.json").is_file()
     assert (out_dir / "topk" / "topk_index.json").is_file()
