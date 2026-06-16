@@ -161,6 +161,51 @@ def test_c3vdv2_supervised_losses_include_weighted_terms(monkeypatch):
     assert losses["loss_weighted/pose_supervised"].item() == pytest.approx(1.5)
 
 
+def test_c3vdv2_zero_supervision_weights_log_without_contribution(monkeypatch):
+    monkeypatch.setattr(
+        stage_two_module,
+        "get_smooth_loss",
+        lambda disp, color: torch.tensor(0.0),
+    )
+    monkeypatch.setattr(
+        stage_two_module,
+        "get_smooth_bright",
+        lambda transform, target, pred, occu_mask: torch.tensor(0.0),
+    )
+    monkeypatch.setattr(
+        c3vdv2_module,
+        "build_c3vdv2_valid_mask_torch",
+        lambda gt_depth, occlusion: torch.ones_like(gt_depth, dtype=torch.bool),
+    )
+    monkeypatch.setattr(
+        c3vdv2_module,
+        "scale_invariant_log_loss",
+        lambda pred_depth, gt_depth, mask: torch.tensor(4.0),
+    )
+
+    trainer = _trainer_stub(C3VDv2Stage2Trainer)
+    trainer.opt.transform_constraint = 0.0
+    trainer.opt.transform_smoothness = 0.0
+    trainer.opt.disparity_smoothness = 0.0
+    trainer.w_depth = 0.0
+    trainer.w_pose = 0.0
+    trainer._supervised_pose_loss = lambda inputs, outputs: torch.tensor(6.0)
+    trainer.compute_reprojection_loss = lambda pred, target: torch.zeros(
+        pred.shape[0], 1, pred.shape[2], pred.shape[3]
+    )
+    inputs, outputs = _stage_two_tensors()
+    inputs["gt_depth"] = torch.ones(1, 1, 2, 2)
+    outputs[("depth", 0, 0)] = torch.ones(1, 1, 2, 2)
+
+    losses = C3VDv2Stage2Trainer.compute_losses(trainer, inputs, outputs)
+
+    assert losses["loss/depth_supervised"].item() == pytest.approx(4.0)
+    assert losses["loss_weighted/depth_supervised"].item() == pytest.approx(0.0)
+    assert losses["loss/pose_supervised"].item() == pytest.approx(6.0)
+    assert losses["loss_weighted/pose_supervised"].item() == pytest.approx(0.0)
+    assert losses["loss"].item() == pytest.approx(0.0)
+
+
 def test_best_checkpoint_saves_weights_and_metadata(tmp_path):
     trainer = object.__new__(_ConcreteBaseTrainer)
     model = torch.nn.Linear(1, 1)

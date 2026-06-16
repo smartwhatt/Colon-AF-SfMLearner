@@ -22,6 +22,13 @@
 #
 # To skip Stage 1 (use existing weights):
 #   SKIP_STAGE1=1 S1_FINAL_WEIGHTS=/path/to/weights bash scripts/run_finetune_c3vdv2.sh
+#
+# To run a short C3VDv2 SSL diagnostic from an existing Stage 2 checkpoint:
+#   C3VDV2_STAGE2_PRESET=ssl_teacher_depth SKIP_STAGE1=1 \
+#   S1_FINAL_WEIGHTS=/path/to/stage2/weights_best \
+#   LOAD_TRAINABLE_WEIGHTS_FOLDER=/path/to/stage2/weights_best \
+#   S2_EPOCHS=1 STEPS_PER_EPOCH=500 S2_LR=1e-5 \
+#   bash scripts/run_finetune_c3vdv2.sh
 # =============================================================================
 
 set -e
@@ -60,12 +67,85 @@ S2_EPOCHS="${S2_EPOCHS:-20}"
 S2_LR="${S2_LR:-1e-4}"
 S2_BATCH="${S2_BATCH:-12}"
 S2_LR_STEP="${S2_LR_STEP:-10}"
+S2_SAVE_FREQUENCY="${S2_SAVE_FREQUENCY:-${SAVE_FREQUENCY:-5}}"
+S2_LOG_FREQUENCY="${S2_LOG_FREQUENCY:-${LOG_FREQUENCY:-200}}"
+
+# Stage 2 preset layer. The supervised preset preserves historical behavior.
+C3VDV2_STAGE2_PRESET="${C3VDV2_STAGE2_PRESET:-supervised}"
+LOAD_TRAINABLE_WEIGHTS_FOLDER="${LOAD_TRAINABLE_WEIGHTS_FOLDER:-}"
+TRAINABLE_MODULES_ENV="${TRAINABLE_MODULES:-}"
+TEACHER_WEIGHTS_FOLDER="${TEACHER_WEIGHTS_FOLDER:-}"
+TEACHER_CONSISTENCY_WEIGHT="${TEACHER_CONSISTENCY_WEIGHT:-}"
+TEACHER_CONSISTENCY_MODE="${TEACHER_CONSISTENCY_MODE:-relative_log_median}"
+S2_MODEL_NAME="${S2_MODEL_NAME:-}"
+
+SSL_STAGE2=0
+TRAINING_SUPERVISION="C3VDv2 GT depth/pose losses enabled"
+TRAINABLE_MODULES=()
+DEFAULT_W_DEPTH_START=1.0
+DEFAULT_W_DEPTH_END=0.3
+DEFAULT_W_POSE_START=0.5
+DEFAULT_W_POSE_END=0.1
+DEFAULT_PPS_SUP_WEIGHT=0.0
+DEFAULT_SPECULAR_LOSS_WEIGHT=0.05
+
+case "$C3VDV2_STAGE2_PRESET" in
+    supervised)
+        ;;
+    ssl_full)
+        SSL_STAGE2=1
+        TRAINING_SUPERVISION="SSL only; C3VDv2 GT is used for validation/checkpoint selection only"
+        DEFAULT_W_DEPTH_START=0.0
+        DEFAULT_W_DEPTH_END=0.0
+        DEFAULT_W_POSE_START=0.0
+        DEFAULT_W_POSE_END=0.0
+        ;;
+    ssl_depth_only)
+        SSL_STAGE2=1
+        TRAINING_SUPERVISION="SSL only; C3VDv2 GT is used for validation/checkpoint selection only"
+        TRAINABLE_MODULES=(depth)
+        DEFAULT_W_DEPTH_START=0.0
+        DEFAULT_W_DEPTH_END=0.0
+        DEFAULT_W_POSE_START=0.0
+        DEFAULT_W_POSE_END=0.0
+        DEFAULT_SPECULAR_LOSS_WEIGHT=0.0
+        ;;
+    ssl_teacher_depth)
+        SSL_STAGE2=1
+        TRAINING_SUPERVISION="SSL + frozen-teacher relative depth; C3VDv2 GT is used for validation/checkpoint selection only"
+        TRAINABLE_MODULES=(depth)
+        DEFAULT_W_DEPTH_START=0.0
+        DEFAULT_W_DEPTH_END=0.0
+        DEFAULT_W_POSE_START=0.0
+        DEFAULT_W_POSE_END=0.0
+        DEFAULT_SPECULAR_LOSS_WEIGHT=0.0
+        : "${TEACHER_CONSISTENCY_WEIGHT:=0.5}"
+        ;;
+    ssl_pose_transform_control)
+        SSL_STAGE2=1
+        TRAINING_SUPERVISION="SSL only; C3VDv2 GT is used for validation/checkpoint selection only"
+        TRAINABLE_MODULES=(pose_encoder pose transform_encoder transform)
+        DEFAULT_W_DEPTH_START=0.0
+        DEFAULT_W_DEPTH_END=0.0
+        DEFAULT_W_POSE_START=0.0
+        DEFAULT_W_POSE_END=0.0
+        DEFAULT_SPECULAR_LOSS_WEIGHT=0.0
+        ;;
+    *)
+        echo "ERROR: C3VDV2_STAGE2_PRESET must be one of: supervised, ssl_full, ssl_depth_only, ssl_teacher_depth, ssl_pose_transform_control"
+        exit 1
+        ;;
+esac
+if [ -n "$TRAINABLE_MODULES_ENV" ]; then
+    read -r -a TRAINABLE_MODULES <<< "$TRAINABLE_MODULES_ENV"
+fi
+TEACHER_CONSISTENCY_WEIGHT="${TEACHER_CONSISTENCY_WEIGHT:-0.0}"
 
 # Loss weight ramping
-W_DEPTH_START="${W_DEPTH_START:-1.0}"
-W_DEPTH_END="${W_DEPTH_END:-0.3}"
-W_POSE_START="${W_POSE_START:-0.5}"
-W_POSE_END="${W_POSE_END:-0.1}"
+W_DEPTH_START="${W_DEPTH_START:-$DEFAULT_W_DEPTH_START}"
+W_DEPTH_END="${W_DEPTH_END:-$DEFAULT_W_DEPTH_END}"
+W_POSE_START="${W_POSE_START:-$DEFAULT_W_POSE_START}"
+W_POSE_END="${W_POSE_END:-$DEFAULT_W_POSE_END}"
 RAMP_EPOCHS="${RAMP_EPOCHS:-8}"
 
 # Depth range — must match evaluate_c3vdv2.py (MIN_DEPTH=0.001, MAX_DEPTH=0.100)
@@ -77,13 +157,13 @@ MAX_DEPTH="${MAX_DEPTH:-0.1}"
 # USE_SPECULAR_NET=0  →  Ablation A: baseline (no change to existing training)
 # USE_SPECULAR_NET=1  →  Ablation B: specular gating + BCE weak supervision
 USE_SPECULAR_NET="${USE_SPECULAR_NET:-0}"
-SPECULAR_LOSS_WEIGHT="${SPECULAR_LOSS_WEIGHT:-0.05}"
+SPECULAR_LOSS_WEIGHT="${SPECULAR_LOSS_WEIGHT:-$DEFAULT_SPECULAR_LOSS_WEIGHT}"
 SPECULAR_THRESHOLD="${SPECULAR_THRESHOLD:-0.98}"
 
 # ── PPS loss (Phase 1 PR 2) ───────────────────────────────────────────────────
 # PPS_SUP_WEIGHT=0     →  disabled (default)
 # PPS_SUP_WEIGHT>0     →  supervised PPS shading consistency on C3VDv2
-PPS_SUP_WEIGHT="${PPS_SUP_WEIGHT:-0.0}"
+PPS_SUP_WEIGHT="${PPS_SUP_WEIGHT:-$DEFAULT_PPS_SUP_WEIGHT}"
 PPS_SELF_WEIGHT="${PPS_SELF_WEIGHT:-0.0}"
 PPS_LIGHT_BASELINE_MM="${PPS_LIGHT_BASELINE_MM:-3.0}"
 
@@ -116,6 +196,10 @@ fi
 if [ "$USE_UNCERTAINTY_POSE" = "1" ]; then
     S2_LOG_NAME="${S2_LOG_NAME}_uncertainty"
 fi
+if [ "$C3VDV2_STAGE2_PRESET" != "supervised" ]; then
+    S2_LOG_NAME="${S2_LOG_NAME}_${C3VDV2_STAGE2_PRESET}"
+fi
+S2_LOG_NAME="${S2_MODEL_NAME:-$S2_LOG_NAME}"
 
 SKIP_STAGE1="${SKIP_STAGE1:-0}"
 
@@ -123,6 +207,12 @@ SKIP_STAGE1="${SKIP_STAGE1:-0}"
 S1_FINAL_WEIGHTS_DEFAULT="${LOG_DIR}/${S1_LOG_NAME}/models/weights_$((S1_EPOCHS - 1))/"
 S1_BEST_WEIGHTS="${LOG_DIR}/${S1_LOG_NAME}/models/weights_best/"
 S1_FINAL_WEIGHTS="${S1_FINAL_WEIGHTS:-$S1_BEST_WEIGHTS}"
+if [ "$SSL_STAGE2" = "1" ] && [ -z "$LOAD_TRAINABLE_WEIGHTS_FOLDER" ]; then
+    LOAD_TRAINABLE_WEIGHTS_FOLDER="$S1_FINAL_WEIGHTS"
+fi
+if [ "$C3VDV2_STAGE2_PRESET" = "ssl_teacher_depth" ] && [ -z "$TEACHER_WEIGHTS_FOLDER" ]; then
+    TEACHER_WEIGHTS_FOLDER="${LOAD_TRAINABLE_WEIGHTS_FOLDER:-$S1_FINAL_WEIGHTS}"
+fi
 
 # =============================================================================
 # HELPERS
@@ -232,9 +322,22 @@ run_stage2() {
     log "STAGE 2: Fine-tuning depth + pose + transform on C3VDv2"
     echo "  What:    encoder+depth  transform_encoder+transform  pose_encoder+pose"
     echo "  Frozen:  position_encoder + position  (Stage 1 C3VDv2 weights)"
+    echo "  Preset:  $C3VDV2_STAGE2_PRESET"
+    echo "  Training supervision: $TRAINING_SUPERVISION"
+    if [ -n "$LOAD_TRAINABLE_WEIGHTS_FOLDER" ]; then
+        echo "  Warm start: $LOAD_TRAINABLE_WEIGHTS_FOLDER"
+    else
+        echo "  Warm start: none"
+    fi
+    if [ "${#TRAINABLE_MODULES[@]}" -gt 0 ]; then
+        echo "  Trainable: ${TRAINABLE_MODULES[*]}"
+    else
+        echo "  Trainable: default Stage 2 modules"
+    fi
     echo "  Epochs:  $S2_EPOCHS  LR: $S2_LR  Batch: $S2_BATCH"
     echo "  w_depth: $W_DEPTH_START → $W_DEPTH_END  w_pose: $W_POSE_START → $W_POSE_END"
     echo "  Ramp:    fixed for $RAMP_EPOCHS epochs, then linear decay"
+    echo "  Save/log frequency: $S2_SAVE_FREQUENCY / $S2_LOG_FREQUENCY"
 
     if [ "$USE_SPECULAR_NET" = "1" ]; then
         echo "  SpecularNet: ON  (weight=$SPECULAR_LOSS_WEIGHT  threshold=$SPECULAR_THRESHOLD)"
@@ -251,6 +354,12 @@ run_stage2() {
     else
         echo "  PoseBalance: OFF"
     fi
+    if [ -n "$TEACHER_WEIGHTS_FOLDER" ]; then
+        echo "  Teacher:     $TEACHER_WEIGHTS_FOLDER"
+        echo "  Teacher loss: $TEACHER_CONSISTENCY_MODE weight=$TEACHER_CONSISTENCY_WEIGHT"
+    else
+        echo "  Teacher:     OFF"
+    fi
     if [ "$USE_SPECULAR_NET" = "1" ] && [ "$PPS_ENABLED" = "1" ]; then
         echo "  Ablation:    D  [SpecularNet + PPS]"
     elif [ "$USE_SPECULAR_NET" = "1" ]; then
@@ -266,50 +375,89 @@ run_stage2() {
         echo "Did Stage 1 complete? Or set S1_FINAL_WEIGHTS=/path/to/weights to override."
         exit 1
     fi
+    if [ -n "$LOAD_TRAINABLE_WEIGHTS_FOLDER" ] && [ ! -d "$LOAD_TRAINABLE_WEIGHTS_FOLDER" ]; then
+        echo "ERROR: LOAD_TRAINABLE_WEIGHTS_FOLDER does not exist: $LOAD_TRAINABLE_WEIGHTS_FOLDER"
+        exit 1
+    fi
+    if [ -n "$TEACHER_WEIGHTS_FOLDER" ] && [ ! -d "$TEACHER_WEIGHTS_FOLDER" ]; then
+        echo "ERROR: TEACHER_WEIGHTS_FOLDER does not exist: $TEACHER_WEIGHTS_FOLDER"
+        exit 1
+    fi
 
     # Build optional SpecularNet flags
-    SPECULAR_ARGS=""
+    SPECULAR_ARGS=()
     if [ "$USE_SPECULAR_NET" = "1" ]; then
-        SPECULAR_ARGS="--use_specular_net --specular_loss_weight $SPECULAR_LOSS_WEIGHT --specular_threshold $SPECULAR_THRESHOLD"
+        SPECULAR_ARGS=(
+            --use_specular_net
+            --specular_loss_weight "$SPECULAR_LOSS_WEIGHT"
+            --specular_threshold "$SPECULAR_THRESHOLD"
+        )
     fi
     PPS_ARGS=(
         --pps_sup_weight "$PPS_SUP_WEIGHT"
         --pps_self_weight "$PPS_SELF_WEIGHT"
         --pps_light_baseline_mm "$PPS_LIGHT_BASELINE_MM"
     )
-    UNCERTAINTY_POSE_ARGS=""
+    UNCERTAINTY_POSE_ARGS=()
     if [ "$USE_UNCERTAINTY_POSE" = "1" ]; then
-        UNCERTAINTY_POSE_ARGS="--use_uncertainty_pose"
+        UNCERTAINTY_POSE_ARGS=(--use_uncertainty_pose)
+    fi
+    LOAD_TRAINABLE_ARGS=()
+    if [ -n "$LOAD_TRAINABLE_WEIGHTS_FOLDER" ]; then
+        LOAD_TRAINABLE_ARGS=(
+            --load_trainable_weights_folder "$LOAD_TRAINABLE_WEIGHTS_FOLDER"
+        )
+    fi
+    TRAINABLE_MODULE_ARGS=()
+    if [ "${#TRAINABLE_MODULES[@]}" -gt 0 ]; then
+        TRAINABLE_MODULE_ARGS=(--trainable_modules "${TRAINABLE_MODULES[@]}")
+    fi
+    TEACHER_ARGS=()
+    if [ -n "$TEACHER_WEIGHTS_FOLDER" ]; then
+        TEACHER_ARGS=(
+            --teacher_weights_folder "$TEACHER_WEIGHTS_FOLDER"
+            --teacher_consistency_weight "$TEACHER_CONSISTENCY_WEIGHT"
+            --teacher_consistency_mode "$TEACHER_CONSISTENCY_MODE"
+        )
     fi
 
-    CUDA_VISIBLE_DEVICES=$GPU uv run python train.py --mode c3vdv2_stage2 \
-        --dataset             c3vdv2 \
-        --data_path           "$DATA_PATH" \
-        --split               "$SPLIT" \
-        --undistort_maps      "$UNDISTORT_MAPS" \
-        --log_dir             "$LOG_DIR" \
-        --model_name          "$S2_LOG_NAME" \
-        --load_weights_folder "$S1_FINAL_WEIGHTS" \
-        --num_epochs          "$S2_EPOCHS" \
-        --learning_rate       "$S2_LR" \
-        --batch_size          "$S2_BATCH" \
-        --scheduler_step_size "$S2_LR_STEP" \
-        --height              256 \
-        --width               320 \
-        --scales              0 1 2 3 \
-        --min_depth           "$MIN_DEPTH" \
-        --max_depth           "$MAX_DEPTH" \
-        --save_frequency      5 \
-        --w_depth_start       "$W_DEPTH_START" \
-        --w_depth_end         "$W_DEPTH_END" \
-        --w_pose_start        "$W_POSE_START" \
-        --w_pose_end          "$W_POSE_END" \
-        --ramp_epochs         "$RAMP_EPOCHS" \
-        "${HF_ARGS[@]}" \
-        "${C3VDV2_ARGS[@]}" \
-        "${PPS_ARGS[@]}" \
-        $SPECULAR_ARGS \
-        $UNCERTAINTY_POSE_ARGS
+    cmd=(
+        uv run python train.py
+        --mode c3vdv2_stage2
+        --dataset c3vdv2
+        --data_path "$DATA_PATH"
+        --split "$SPLIT"
+        --undistort_maps "$UNDISTORT_MAPS"
+        --log_dir "$LOG_DIR"
+        --model_name "$S2_LOG_NAME"
+        --load_weights_folder "$S1_FINAL_WEIGHTS"
+        --num_epochs "$S2_EPOCHS"
+        --learning_rate "$S2_LR"
+        --batch_size "$S2_BATCH"
+        --scheduler_step_size "$S2_LR_STEP"
+        --height 256
+        --width 320
+        --scales 0 1 2 3
+        --min_depth "$MIN_DEPTH"
+        --max_depth "$MAX_DEPTH"
+        --save_frequency "$S2_SAVE_FREQUENCY"
+        --log_frequency "$S2_LOG_FREQUENCY"
+        --w_depth_start "$W_DEPTH_START"
+        --w_depth_end "$W_DEPTH_END"
+        --w_pose_start "$W_POSE_START"
+        --w_pose_end "$W_POSE_END"
+        --ramp_epochs "$RAMP_EPOCHS"
+        "${HF_ARGS[@]}"
+        "${C3VDV2_ARGS[@]}"
+        "${PPS_ARGS[@]}"
+        "${LOAD_TRAINABLE_ARGS[@]}"
+        "${TRAINABLE_MODULE_ARGS[@]}"
+        "${TEACHER_ARGS[@]}"
+        "${SPECULAR_ARGS[@]}"
+        "${UNCERTAINTY_POSE_ARGS[@]}"
+    )
+
+    CUDA_VISIBLE_DEVICES=$GPU "${cmd[@]}"
 
     log "Stage 2 complete."
     echo "  Final weights: ${LOG_DIR}/${S2_LOG_NAME}/models/weights_$((S2_EPOCHS - 1))/"
@@ -337,6 +485,9 @@ echo "  Logs:         $LOG_DIR"
 echo "  Split:        $SPLIT"
 echo "  Val batches:  $C3VDV2_VAL_BATCHES"
 echo "  SpecularNet:  $USE_SPECULAR_NET"
+echo "  Stage2 preset: $C3VDV2_STAGE2_PRESET"
+echo "  Stage2 run:    $S2_LOG_NAME"
+echo "  Stage2 supervision: $TRAINING_SUPERVISION"
 
 check_data
 
@@ -367,6 +518,16 @@ if [ "$DATA_SOURCE" = "hf" ]; then
     echo "      --hf_repo_id \"$HF_REPO_ID\" \\"
     echo "      --hf_split test \\"
     echo "      --weights_folder $S2_FINAL_WEIGHTS"
+    if [ "$C3VDV2_STAGE2_PRESET" != "supervised" ]; then
+        echo ""
+        echo "  Evaluate final checkpoint with median scaling:"
+        echo "  uv run python tools/evaluate_c3vdv2.py \\"
+        echo "      --data_source hf \\"
+        echo "      --hf_repo_id \"$HF_REPO_ID\" \\"
+        echo "      --hf_split test \\"
+        echo "      --weights_folder $S2_FINAL_WEIGHTS \\"
+        echo "      --median_scaling"
+    fi
 else
     echo "  Evaluate best checkpoint with:"
     echo "  uv run python tools/evaluate_c3vdv2.py \\"
@@ -379,6 +540,15 @@ else
     echo "      --data_root $DATA_PATH \\"
     echo "      --weights_folder $S2_FINAL_WEIGHTS \\"
     echo "      --split $SPLIT"
+    if [ "$C3VDV2_STAGE2_PRESET" != "supervised" ]; then
+        echo ""
+        echo "  Evaluate final checkpoint with median scaling:"
+        echo "  uv run python tools/evaluate_c3vdv2.py \\"
+        echo "      --data_root $DATA_PATH \\"
+        echo "      --weights_folder $S2_FINAL_WEIGHTS \\"
+        echo "      --split $SPLIT \\"
+        echo "      --median_scaling"
+    fi
 fi
 echo ""
 echo "  Monitor training:"
