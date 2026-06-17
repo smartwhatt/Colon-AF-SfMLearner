@@ -7,6 +7,7 @@
 #
 # Usage:
 #   bash scripts/submit_c3vdv2_ssl_hf.sh
+#   START_RUN=run_d C3VDV2_STAGE2_PRESET=ssl_depth_only bash scripts/submit_c3vdv2_ssl_hf.sh
 #   START_RUN=run_d C3VDV2_STAGE2_PRESET=ssl_teacher_depth bash scripts/submit_c3vdv2_ssl_hf.sh
 #   START_RUN=run_b C3VDV2_STAGE2_PRESET=ssl_teacher_depth EPOCHS=1 STEPS_PER_EPOCH=500 bash scripts/submit_c3vdv2_ssl_hf.sh
 
@@ -34,7 +35,14 @@ export C3VDV2_DEV_HF_SPLIT="${C3VDV2_DEV_HF_SPLIT:-}"
 
 export LOG_DIR="${LOG_DIR:-$PROJECT_DIR/logs/c3vdv2_hf_ssl}"
 export GPU="${GPU:-0}"
-export C3VDV2_STAGE2_PRESET="${C3VDV2_STAGE2_PRESET:-ssl_full}"
+export C3VDV2_STAGE2_PRESET="${C3VDV2_STAGE2_PRESET:-ssl_teacher_depth}"
+
+if [ "$C3VDV2_STAGE2_PRESET" = "ssl_full" ] && [ "${ALLOW_UNANCHORED_SSL_FULL:-0}" != "1" ]; then
+    echo "ERROR: ssl_full is unanchored and can collapse C3VDv2 depth immediately."
+    echo "Use ssl_teacher_depth for the default diagnostic, or set"
+    echo "ALLOW_UNANCHORED_SSL_FULL=1 to intentionally run this control."
+    exit 1
+fi
 
 case "$C3VDV2_STAGE2_PRESET" in
     supervised)

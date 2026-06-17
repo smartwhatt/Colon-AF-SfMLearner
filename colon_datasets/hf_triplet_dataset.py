@@ -147,9 +147,12 @@ class _HFTripletMixin:
 
     def _format_c3vdv2(self, decoded: dict[str, Any]) -> dict:
         out = {
-            "color_prev": decoded["rgb_prev_aug"],
-            "color_curr": decoded["rgb_curr_aug"],
-            "color_next": decoded["rgb_next_aug"],
+            "color_prev": decoded["rgb_prev"],
+            "color_curr": decoded["rgb_curr"],
+            "color_next": decoded["rgb_next"],
+            "color_prev_aug": decoded["rgb_prev_aug"],
+            "color_curr_aug": decoded["rgb_curr_aug"],
+            "color_next_aug": decoded["rgb_next_aug"],
             "K": decoded["K"],
             "seq": decoded["seq"],
             "frame_idx": decoded["frame_idx"],

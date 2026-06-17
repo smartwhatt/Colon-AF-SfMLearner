@@ -127,6 +127,22 @@ def depth_metric_sums_torch(
             gt_depth, min_depth=min_depth, max_depth=max_depth
         )
 
+    if median_scaling and gt_depth.ndim >= 4 and gt_depth.shape[0] > 1:
+        totals: dict[str, torch.Tensor] = {}
+        for idx in range(gt_depth.shape[0]):
+            sums = depth_metric_sums_torch(
+                gt_depth[idx : idx + 1],
+                pred_depth[idx : idx + 1],
+                mask[idx : idx + 1],
+                min_depth=min_depth,
+                max_depth=max_depth,
+                median_scaling=True,
+                eps=eps,
+            )
+            for key, value in sums.items():
+                totals[key] = totals.get(key, torch.zeros_like(value)) + value
+        return totals
+
     gt = gt_depth[mask].float()
     pred = pred_depth[mask].float()
     if gt.numel() == 0:
@@ -181,22 +197,28 @@ def merge_depth_metric_sums(
 
 def finalize_depth_metric_sums(totals: Mapping[str, float]) -> dict[str, float]:
     """Convert additive sums from depth_metric_sums_torch into metric means."""
-    n = float(totals.get("valid_pixels", 0.0))
+    def as_float(key: str) -> float:
+        value = totals.get(key, 0.0)
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu().item()
+        return float(value)
+
+    n = as_float("valid_pixels")
     if n <= 0:
         return {key: float("nan") for key in DEPTH_METRIC_KEYS} | {
             "valid_pixels": 0.0,
             "rmse_mm": float("nan"),
         }
 
-    rmse = float(np.sqrt(totals.get("sq_error_sum", 0.0) / n))
+    rmse = float(np.sqrt(as_float("sq_error_sum") / n))
     return {
-        "abs_rel": totals.get("abs_rel_sum", 0.0) / n,
-        "sq_rel": totals.get("sq_rel_sum", 0.0) / n,
+        "abs_rel": as_float("abs_rel_sum") / n,
+        "sq_rel": as_float("sq_rel_sum") / n,
         "rmse": rmse,
         "rmse_mm": rmse * 1000.0,
-        "rmse_log": float(np.sqrt(totals.get("log_sq_error_sum", 0.0) / n)),
-        "a1": totals.get("a1_count", 0.0) / n,
-        "a2": totals.get("a2_count", 0.0) / n,
-        "a3": totals.get("a3_count", 0.0) / n,
+        "rmse_log": float(np.sqrt(as_float("log_sq_error_sum") / n)),
+        "a1": as_float("a1_count") / n,
+        "a2": as_float("a2_count") / n,
+        "a3": as_float("a3_count") / n,
         "valid_pixels": n,
     }

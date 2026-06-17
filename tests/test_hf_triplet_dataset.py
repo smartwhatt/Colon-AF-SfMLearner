@@ -63,6 +63,7 @@ def test_hf_triplet_c3vdv2_format_with_labels():
 
     sample = dataset[0]
     assert sample["color_curr"].shape == (3, 4, 6)
+    assert sample["color_curr_aug"].shape == (3, 4, 6)
     assert sample["gt_depth"].shape == (1, 4, 6)
     assert sample["occlusion"].shape == (1, 4, 6)
     assert sample["K"].shape == (3, 3)

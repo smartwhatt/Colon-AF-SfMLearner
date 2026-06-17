@@ -241,8 +241,9 @@ class _C3VDv2DataMixin(BaseTrainer):
 
         for f_id, key in {0: "color_curr", -1: "color_prev", 1: "color_next"}.items():
             t = batch[key].to(device)
+            aug = batch.get(f"{key}_aug", batch[key]).to(device)
             out[("color", f_id, 0)] = t
-            out[("color_aug", f_id, 0)] = t  # augmentation applied in dataset
+            out[("color_aug", f_id, 0)] = aug
 
         # Intrinsics: normalised (B,3,3) → pixel-unit (B,4,4) per scale.
         # K_norm[0,0]=fx/512, K_norm[0,2]=cx/512, etc.
@@ -274,7 +275,17 @@ class _C3VDv2DataMixin(BaseTrainer):
                     )
 
         # Pass-through remaining keys (gt_depth, occlusion, pose vectors…)
-        skip = {"color_curr", "color_prev", "color_next", "K", "seq", "frame_idx"}
+        skip = {
+            "color_curr",
+            "color_prev",
+            "color_next",
+            "color_curr_aug",
+            "color_prev_aug",
+            "color_next_aug",
+            "K",
+            "seq",
+            "frame_idx",
+        }
         for key, val in batch.items():
             if key not in skip:
                 out[key] = val.to(device) if hasattr(val, "to") else val
@@ -525,6 +536,7 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             return None
 
         metric_totals = {}
+        metric_totals_median = {}
         objective_total = 0.0
         ncc_total = 0.0
         depth_loss_total = 0.0
@@ -553,6 +565,15 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
                 merge_depth_metric_sums(
                     metric_totals,
                     depth_metric_sums_torch(gt_depth, pred_depth, depth_mask),
+                )
+                merge_depth_metric_sums(
+                    metric_totals_median,
+                    depth_metric_sums_torch(
+                        gt_depth,
+                        pred_depth,
+                        depth_mask,
+                        median_scaling=True,
+                    ),
                 )
                 l_depth = scale_invariant_log_loss(
                     pred_depth, gt_depth, depth_mask.float()
@@ -602,6 +623,26 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
                 self.step,
             )
             summary.update(metrics)
+
+        median_metrics = finalize_depth_metric_sums(metric_totals_median)
+        if median_metrics["valid_pixels"] > 0:
+            for key in (
+                "abs_rel", "sq_rel", "rmse", "rmse_mm",
+                "rmse_log", "a1", "a2", "a3",
+            ):
+                writer.add_scalar(
+                    f"{prefix}_median/{key}",
+                    median_metrics[key],
+                    self.step,
+                )
+            writer.add_scalar(
+                f"{prefix}_median/valid_pixels",
+                median_metrics["valid_pixels"],
+                self.step,
+            )
+            summary.update(
+                {f"median_scaled_{key}": value for key, value in median_metrics.items()}
+            )
 
         if depth_loss_batches > 0:
             summary["depth_supervised"] = depth_loss_total / depth_loss_batches

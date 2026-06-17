@@ -50,3 +50,29 @@ def test_torch_metric_sums_aggregate_weighted_batches():
     assert metrics["valid_pixels"] == 4
     assert metrics["rmse"] > 0
     assert 0 <= metrics["a1"] <= 1
+
+
+def test_torch_metric_sums_support_median_scaling():
+    gt = torch.tensor([[[[0.02, 0.04]]]])
+    pred = torch.tensor([[[[0.01, 0.02]]]])
+
+    raw = finalize_depth_metric_sums(depth_metric_sums_torch(gt, pred))
+    scaled = finalize_depth_metric_sums(
+        depth_metric_sums_torch(gt, pred, median_scaling=True)
+    )
+
+    assert raw["rmse"] > 0
+    assert scaled["rmse"] < 1e-8
+
+
+def test_torch_metric_sums_median_scales_per_image():
+    gt = torch.tensor([[[[0.02, 0.04]]], [[[0.02, 0.04]]]])
+    pred = torch.tensor([[[[0.01, 0.02]]], [[[0.04, 0.08]]]])
+
+    raw = finalize_depth_metric_sums(depth_metric_sums_torch(gt, pred))
+    scaled = finalize_depth_metric_sums(
+        depth_metric_sums_torch(gt, pred, median_scaling=True)
+    )
+
+    assert raw["rmse"] > 0
+    assert scaled["rmse"] < 1e-8

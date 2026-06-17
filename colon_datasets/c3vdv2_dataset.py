@@ -250,6 +250,9 @@ class C3VDv2Dataset(torch.utils.data.Dataset):
         img_prev = self._load_rgb(seq, idx_prev)
         img_curr = self._load_rgb(seq, idx_curr)
         img_next = self._load_rgb(seq, idx_next)
+        img_prev_aug = img_prev
+        img_curr_aug = img_curr
+        img_next_aug = img_next
 
         if self.augment:
             # Apply the SAME jitter to all three frames (consistency)
@@ -265,15 +268,18 @@ class C3VDv2Dataset(torch.utils.data.Dataset):
                 saturation=(saturation, saturation),
                 hue=(hue, hue),
             )
-            img_prev = np.array(jitter_fn(Image.fromarray(img_prev)))
-            img_curr = np.array(jitter_fn(Image.fromarray(img_curr)))
-            img_next = np.array(jitter_fn(Image.fromarray(img_next)))
+            img_prev_aug = np.array(jitter_fn(Image.fromarray(img_prev)))
+            img_curr_aug = np.array(jitter_fn(Image.fromarray(img_curr)))
+            img_next_aug = np.array(jitter_fn(Image.fromarray(img_next)))
 
         # Convert to float tensors [0, 1]
         to_t = lambda x: torch.from_numpy(x.transpose(2, 0, 1)).float() / 255.0
         t_prev = to_t(img_prev)
         t_curr = to_t(img_curr)
         t_next = to_t(img_next)
+        t_prev_aug = to_t(img_prev_aug)
+        t_curr_aug = to_t(img_curr_aug)
+        t_next_aug = to_t(img_next_aug)
 
         # ---- Ground-truth depth -----------------------------------------
         depth = self._load_depth(seq, idx_curr)
@@ -316,6 +322,9 @@ class C3VDv2Dataset(torch.utils.data.Dataset):
             "color_curr": t_curr,  # 3xHxW
             "color_prev": t_prev,  # 3xHxW
             "color_next": t_next,  # 3xHxW
+            "color_curr_aug": t_curr_aug,  # 3xHxW
+            "color_prev_aug": t_prev_aug,  # 3xHxW
+            "color_next_aug": t_next_aug,  # 3xHxW
             # Ground truth depth
             "gt_depth": depth_tensor,  # 1xHxW  (metres)
             # Occlusion mask (1 = occluded, exclude from photometric loss)
