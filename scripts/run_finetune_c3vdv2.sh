@@ -88,6 +88,7 @@ DEFAULT_W_POSE_START=0.5
 DEFAULT_W_POSE_END=0.1
 DEFAULT_PPS_SUP_WEIGHT=0.0
 DEFAULT_SPECULAR_LOSS_WEIGHT=0.05
+DEFAULT_C3VDV2_BEST_METRIC="auto"
 
 case "$C3VDV2_STAGE2_PRESET" in
     supervised)
@@ -109,6 +110,7 @@ case "$C3VDV2_STAGE2_PRESET" in
         DEFAULT_W_POSE_START=0.0
         DEFAULT_W_POSE_END=0.0
         DEFAULT_SPECULAR_LOSS_WEIGHT=0.0
+        DEFAULT_C3VDV2_BEST_METRIC="median_rmse_mm"
         ;;
     ssl_teacher_depth)
         SSL_STAGE2=1
@@ -119,6 +121,7 @@ case "$C3VDV2_STAGE2_PRESET" in
         DEFAULT_W_POSE_START=0.0
         DEFAULT_W_POSE_END=0.0
         DEFAULT_SPECULAR_LOSS_WEIGHT=0.0
+        DEFAULT_C3VDV2_BEST_METRIC="median_rmse_mm"
         : "${TEACHER_CONSISTENCY_WEIGHT:=0.5}"
         ;;
     ssl_pose_transform_control)
@@ -140,6 +143,7 @@ if [ -n "$TRAINABLE_MODULES_ENV" ]; then
     read -r -a TRAINABLE_MODULES <<< "$TRAINABLE_MODULES_ENV"
 fi
 TEACHER_CONSISTENCY_WEIGHT="${TEACHER_CONSISTENCY_WEIGHT:-0.0}"
+C3VDV2_BEST_METRIC="${C3VDV2_BEST_METRIC:-$DEFAULT_C3VDV2_BEST_METRIC}"
 
 # Loss weight ramping
 W_DEPTH_START="${W_DEPTH_START:-$DEFAULT_W_DEPTH_START}"
@@ -336,6 +340,7 @@ run_stage2() {
     fi
     echo "  Epochs:  $S2_EPOCHS  LR: $S2_LR  Batch: $S2_BATCH"
     echo "  w_depth: $W_DEPTH_START → $W_DEPTH_END  w_pose: $W_POSE_START → $W_POSE_END"
+    echo "  Best metric: $C3VDV2_BEST_METRIC"
     echo "  Ramp:    fixed for $RAMP_EPOCHS epochs, then linear decay"
     echo "  Save/log frequency: $S2_SAVE_FREQUENCY / $S2_LOG_FREQUENCY"
 
@@ -447,6 +452,7 @@ run_stage2() {
         --w_pose_start "$W_POSE_START"
         --w_pose_end "$W_POSE_END"
         --ramp_epochs "$RAMP_EPOCHS"
+        --c3vdv2_best_metric "$C3VDV2_BEST_METRIC"
         "${HF_ARGS[@]}"
         "${C3VDV2_ARGS[@]}"
         "${PPS_ARGS[@]}"

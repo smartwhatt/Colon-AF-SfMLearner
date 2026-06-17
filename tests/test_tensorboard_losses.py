@@ -272,3 +272,26 @@ def test_c3vdv2_stage2_ncc_fallback_is_maximized():
     assert C3VDv2Stage2Trainer._best_metric_from_c3vdv2_summaries(
         {"ood_t4": {"ncc_registration": 0.4}}
     ) == ("ood_t4/ncc_registration", 0.4, "max")
+
+
+def test_c3vdv2_best_metric_can_select_median_rmse():
+    summaries = {
+        "ood_t4": {"rmse_mm": 3.0, "median_scaled_rmse_mm": 2.0},
+        "dev": {"rmse_mm": 5.0, "median_scaled_rmse_mm": 4.0},
+    }
+
+    assert C3VDv2Stage2Trainer._best_metric_from_c3vdv2_summaries(
+        summaries,
+        best_metric="median_rmse_mm",
+    ) == ("dev_median/rmse_mm", 4.0, "min")
+
+
+def test_c3vdv2_best_metric_can_select_median_a1_max():
+    summaries = {
+        "ood_t4": {"median_scaled_a1": 0.8},
+    }
+
+    assert C3VDv2Stage2Trainer._best_metric_from_c3vdv2_summaries(
+        summaries,
+        best_metric="median_a1",
+    ) == ("ood_t4_median/a1", 0.8, "max")

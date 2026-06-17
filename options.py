@@ -46,6 +46,18 @@ TrainModeType   = Literal["stage1", "stage2", "end_to_end",
                            "c3vdv2_stage1", "c3vdv2_stage2"]
 DataSourceType  = Literal["local", "hf"]
 TeacherConsistencyMode = Literal["relative_log_median"]
+C3VDv2BestMetricType = Literal[
+    "auto",
+    "rmse_mm",
+    "median_rmse_mm",
+    "abs_rel",
+    "median_abs_rel",
+    "a1",
+    "median_a1",
+    "ncc_registration",
+    "training_objective",
+    "depth_supervised",
+]
 
 
 # ── Config model ──────────────────────────────────────────────────────────────
@@ -196,6 +208,13 @@ class TrainingConfig(BaseModel):
     c3vdv2_dev_hf_split: Optional[str] = Field(
         default=None,
         description="optional Hugging Face split name for in-domain C3VDv2 dev metric logging",
+    )
+    c3vdv2_best_metric: C3VDv2BestMetricType = Field(
+        default="auto",
+        description=(
+            "validation metric used for C3VDv2 Stage 2 weights_best selection; "
+            "auto preserves historical raw rmse_mm behavior"
+        ),
     )
 
     # ── SpecularNet ───────────────────────────────────────────────────────────

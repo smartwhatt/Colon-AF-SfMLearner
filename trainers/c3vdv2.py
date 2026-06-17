@@ -507,7 +507,10 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
                     self.step,
                 )
 
-            best_metric = self._best_metric_from_c3vdv2_summaries(summaries)
+            best_metric = self._best_metric_from_c3vdv2_summaries(
+                summaries,
+                getattr(self.opt, "c3vdv2_best_metric", "auto"),
+            )
             if best_metric is not None:
                 metric_name, metric_value, mode = best_metric
                 self._maybe_save_best_model(metric_name, metric_value, mode=mode)
@@ -517,8 +520,15 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
             return super().val()
 
     @staticmethod
-    def _best_metric_from_c3vdv2_summaries(summaries):
+    def _best_metric_from_c3vdv2_summaries(summaries, best_metric="auto"):
         """Prefer in-domain dev depth, then trajectory-OOD depth, then fallbacks."""
+        best_metric = best_metric or "auto"
+        if best_metric != "auto":
+            return C3VDv2Stage2Trainer._explicit_best_metric_from_summaries(
+                summaries,
+                best_metric,
+            )
+
         for prefix in ("dev", "ood_t4"):
             summary = summaries.get(prefix)
             if not summary:
@@ -528,6 +538,33 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
                     return f"{prefix}/{key}", summary[key], "min"
             if "ncc_registration" in summary:
                 return f"{prefix}/ncc_registration", summary["ncc_registration"], "max"
+        return None
+
+    @staticmethod
+    def _explicit_best_metric_from_summaries(summaries, best_metric):
+        metric_map = {
+            "rmse_mm": ("rmse_mm", "rmse_mm", "min", False),
+            "median_rmse_mm": ("median_scaled_rmse_mm", "rmse_mm", "min", True),
+            "abs_rel": ("abs_rel", "abs_rel", "min", False),
+            "median_abs_rel": ("median_scaled_abs_rel", "abs_rel", "min", True),
+            "a1": ("a1", "a1", "max", False),
+            "median_a1": ("median_scaled_a1", "a1", "max", True),
+            "ncc_registration": ("ncc_registration", "ncc_registration", "max", False),
+            "training_objective": ("training_objective", "training_objective", "min", False),
+            "depth_supervised": ("depth_supervised", "depth_supervised", "min", False),
+        }
+        if best_metric not in metric_map:
+            valid = ", ".join(["auto"] + sorted(metric_map))
+            raise ValueError(
+                f"Unsupported c3vdv2_best_metric={best_metric!r}; valid: {valid}"
+            )
+
+        summary_key, tag_key, mode, median_scaled = metric_map[best_metric]
+        for prefix in ("dev", "ood_t4"):
+            summary = summaries.get(prefix)
+            if summary and summary_key in summary:
+                tag_prefix = f"{prefix}_median" if median_scaled else prefix
+                return f"{tag_prefix}/{tag_key}", summary[summary_key], mode
         return None
 
     def _log_c3vdv2_loader_metrics(self, prefix: str, loader) -> dict | None:
