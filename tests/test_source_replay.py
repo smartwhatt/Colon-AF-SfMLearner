@@ -139,3 +139,42 @@ def test_source_replay_dataloader_uses_c3vdv2_hf_format(monkeypatch):
     assert calls[1]["is_train"] is False
     assert trainer.source_replay_train_loader.batch_size == 8
     assert trainer.source_replay_val_loader.batch_size == 8
+
+
+def test_source_replay_val_logs_median_scaled_metrics(monkeypatch):
+    class FakeWriter:
+        def __init__(self):
+            self.scalars = {}
+
+        def add_scalar(self, tag, value, step):
+            self.scalars[tag] = (float(value), step)
+
+    trainer = object.__new__(StageTwoTrainer)
+    trainer.opt = SimpleNamespace(source_replay_val_batches=1)
+    trainer.device = torch.device("cpu")
+    trainer.step = 7
+    trainer.writers = {"val": FakeWriter()}
+    trainer.source_replay_val_loader = [
+        {
+            "gt_depth": torch.tensor(
+                [[[[0.010, 0.020], [0.030, 0.040]]]], dtype=torch.float32
+            )
+        }
+    ]
+    trainer._forward_stage2 = lambda inputs: {
+        ("depth", 0, 0): inputs["gt_depth"] * 2.0
+    }
+    trainer._compute_source_replay_losses = lambda inputs, outputs: {
+        "source_replay/loss": torch.tensor(1.5)
+    }
+    monkeypatch.setattr(stage_two_module, "adapt_c3vdv2_batch", lambda batch, opt, device: batch)
+
+    summary = StageTwoTrainer._log_source_replay_val_metrics(trainer)
+
+    scalars = trainer.writers["val"].scalars
+    assert "source_replay/rmse_mm" in scalars
+    assert "source_replay_median/rmse_mm" in scalars
+    assert "source_replay_median/a1" in scalars
+    assert scalars["source_replay/rmse_mm"][0] > 0.0
+    assert scalars["source_replay_median/rmse_mm"][0] == pytest.approx(0.0)
+    assert summary["median_scaled_rmse_mm"] == pytest.approx(0.0)

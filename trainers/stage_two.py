@@ -498,6 +498,7 @@ class StageTwoTrainer(BaseTrainer):
             return None
 
         metric_totals = {}
+        metric_totals_median = {}
         replay_loss_total = 0.0
         replay_batches = 0
 
@@ -511,14 +512,26 @@ class StageTwoTrainer(BaseTrainer):
             replay_loss_total += float(replay_losses["source_replay/loss"].detach().cpu())
 
             if "gt_depth" in inputs and ("depth", 0, 0) in outputs:
+                gt_depth = inputs["gt_depth"]
+                pred_depth = outputs[("depth", 0, 0)]
+                depth_mask = build_c3vdv2_valid_mask_torch(
+                    gt_depth, inputs.get("occlusion")
+                )
                 merge_depth_metric_sums(
                     metric_totals,
                     depth_metric_sums_torch(
-                        inputs["gt_depth"],
-                        outputs[("depth", 0, 0)],
-                        build_c3vdv2_valid_mask_torch(
-                            inputs["gt_depth"], inputs.get("occlusion")
-                        ),
+                        gt_depth,
+                        pred_depth,
+                        depth_mask,
+                    ),
+                )
+                merge_depth_metric_sums(
+                    metric_totals_median,
+                    depth_metric_sums_torch(
+                        gt_depth,
+                        pred_depth,
+                        depth_mask,
+                        median_scaling=True,
                     ),
                 )
             del raw_inputs, inputs, outputs, replay_losses
@@ -545,6 +558,24 @@ class StageTwoTrainer(BaseTrainer):
                 "source_replay/valid_pixels", metrics["valid_pixels"], self.step
             )
             summary.update(metrics)
+
+        median_metrics = finalize_depth_metric_sums(metric_totals_median)
+        if median_metrics["valid_pixels"] > 0:
+            for key in (
+                "abs_rel", "sq_rel", "rmse", "rmse_mm",
+                "rmse_log", "a1", "a2", "a3",
+            ):
+                writer.add_scalar(
+                    f"source_replay_median/{key}", median_metrics[key], self.step
+                )
+            writer.add_scalar(
+                "source_replay_median/valid_pixels",
+                median_metrics["valid_pixels"],
+                self.step,
+            )
+            summary.update(
+                {f"median_scaled_{key}": value for key, value in median_metrics.items()}
+            )
         return summary
 
     # ── Losses ────────────────────────────────────────────────────────────────
