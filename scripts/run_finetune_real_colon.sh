@@ -25,6 +25,9 @@
 #
 # For frozen-depth adaptation with teacher relative-depth anchoring:
 #   ADAPTATION_PRESET=teacher_pose_transform bash scripts/run_finetune_real_colon.sh
+#
+# For trainable-depth adaptation with teacher anchoring and C3VDv2 source replay:
+#   ADAPTATION_PRESET=teacher_source_replay bash scripts/run_finetune_real_colon.sh
 # =============================================================================
 
 set -e
@@ -85,8 +88,15 @@ case "$ADAPTATION_PRESET" in
         : "${TEACHER_WEIGHTS_FOLDER:=$LOAD_WEIGHTS_FOLDER}"
         : "${TEACHER_CONSISTENCY_WEIGHT:=0.5}"
         ;;
+    teacher_source_replay)
+        TRAINABLE_MODULES=(encoder depth pose_encoder pose transform_encoder transform)
+        : "${TEACHER_WEIGHTS_FOLDER:=$LOAD_WEIGHTS_FOLDER}"
+        : "${TEACHER_CONSISTENCY_WEIGHT:=0.25}"
+        : "${SOURCE_REPLAY_WEIGHT:=1.0}"
+        : "${SOURCE_REPLAY_HF_REPO_ID:=SmartWhatt/c3vdv2-SfM}"
+        ;;
     *)
-        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform, teacher_pose_transform"
+        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform, teacher_pose_transform, teacher_source_replay"
         exit 1
         ;;
 esac
@@ -96,6 +106,16 @@ fi
 TEACHER_WEIGHTS_FOLDER="${TEACHER_WEIGHTS_FOLDER:-}"
 TEACHER_CONSISTENCY_WEIGHT="${TEACHER_CONSISTENCY_WEIGHT:-0.0}"
 TEACHER_CONSISTENCY_MODE="${TEACHER_CONSISTENCY_MODE:-relative_log_median}"
+
+SOURCE_REPLAY_WEIGHT="${SOURCE_REPLAY_WEIGHT:-0.0}"
+SOURCE_REPLAY_HF_REPO_ID="${SOURCE_REPLAY_HF_REPO_ID:-}"
+SOURCE_REPLAY_TRAIN_SPLIT="${SOURCE_REPLAY_TRAIN_SPLIT:-train}"
+SOURCE_REPLAY_VAL_SPLIT="${SOURCE_REPLAY_VAL_SPLIT:-val}"
+SOURCE_REPLAY_BATCH_SIZE="${SOURCE_REPLAY_BATCH_SIZE:-}"
+SOURCE_REPLAY_DEPTH_WEIGHT="${SOURCE_REPLAY_DEPTH_WEIGHT:-1.0}"
+SOURCE_REPLAY_POSE_WEIGHT="${SOURCE_REPLAY_POSE_WEIGHT:-0.1}"
+SOURCE_REPLAY_DEPTH_LOSS="${SOURCE_REPLAY_DEPTH_LOSS:-smooth_l1_log}"
+SOURCE_REPLAY_VAL_BATCHES="${SOURCE_REPLAY_VAL_BATCHES:-4}"
 
 log() { echo -e "\n\033[1;36m>>> $*\033[0m\n"; }
 
@@ -158,6 +178,12 @@ check_data() {
         echo "ERROR: TEACHER_WEIGHTS_FOLDER does not exist: $TEACHER_WEIGHTS_FOLDER"
         exit 1
     fi
+    if [ "$SOURCE_REPLAY_WEIGHT" != "0" ] && [ "$SOURCE_REPLAY_WEIGHT" != "0.0" ]; then
+        if [ -z "$SOURCE_REPLAY_HF_REPO_ID" ]; then
+            echo "ERROR: SOURCE_REPLAY_HF_REPO_ID is required when SOURCE_REPLAY_WEIGHT > 0"
+            exit 1
+        fi
+    fi
 }
 
 run_stage2_adaptation() {
@@ -200,6 +226,13 @@ run_stage2_adaptation() {
     else
         echo "  Teacher:      OFF"
     fi
+    if [ "$SOURCE_REPLAY_WEIGHT" != "0" ] && [ "$SOURCE_REPLAY_WEIGHT" != "0.0" ]; then
+        echo "  Replay:       $SOURCE_REPLAY_HF_REPO_ID"
+        echo "  Replay split: train=$SOURCE_REPLAY_TRAIN_SPLIT val=$SOURCE_REPLAY_VAL_SPLIT"
+        echo "  Replay loss:  weight=$SOURCE_REPLAY_WEIGHT depth=$SOURCE_REPLAY_DEPTH_WEIGHT pose=$SOURCE_REPLAY_POSE_WEIGHT type=$SOURCE_REPLAY_DEPTH_LOSS"
+    else
+        echo "  Replay:       OFF"
+    fi
 
     cmd=(
         uv run python train.py
@@ -240,6 +273,22 @@ run_stage2_adaptation() {
             --teacher_consistency_weight "$TEACHER_CONSISTENCY_WEIGHT"
             --teacher_consistency_mode "$TEACHER_CONSISTENCY_MODE"
         )
+    fi
+
+    if [ "$SOURCE_REPLAY_WEIGHT" != "0" ] && [ "$SOURCE_REPLAY_WEIGHT" != "0.0" ]; then
+        cmd+=(
+            --source_replay_weight "$SOURCE_REPLAY_WEIGHT"
+            --source_replay_hf_repo_id "$SOURCE_REPLAY_HF_REPO_ID"
+            --source_replay_train_split "$SOURCE_REPLAY_TRAIN_SPLIT"
+            --source_replay_val_split "$SOURCE_REPLAY_VAL_SPLIT"
+            --source_replay_depth_weight "$SOURCE_REPLAY_DEPTH_WEIGHT"
+            --source_replay_pose_weight "$SOURCE_REPLAY_POSE_WEIGHT"
+            --source_replay_depth_loss "$SOURCE_REPLAY_DEPTH_LOSS"
+            --source_replay_val_batches "$SOURCE_REPLAY_VAL_BATCHES"
+        )
+        if [ -n "$SOURCE_REPLAY_BATCH_SIZE" ]; then
+            cmd+=(--source_replay_batch_size "$SOURCE_REPLAY_BATCH_SIZE")
+        fi
     fi
 
     if [ "$USE_SPECULAR_NET" = "1" ]; then

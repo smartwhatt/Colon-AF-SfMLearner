@@ -11,6 +11,7 @@
 #   bash scripts/submit_real_colon_hf.sh
 #   ADAPTATION_PRESET=full START_RUN=run_d bash scripts/submit_real_colon_hf.sh
 #   ADAPTATION_PRESET=teacher_pose_transform START_RUN=run_b bash scripts/submit_real_colon_hf.sh
+#   ADAPTATION_PRESET=teacher_source_replay START_RUN=run_d bash scripts/submit_real_colon_hf.sh
 #   EPOCHS=20 STEPS_PER_EPOCH="" MODEL_NAME=realcolon_run_d_full bash scripts/submit_real_colon_hf.sh
 
 set -e
@@ -47,8 +48,11 @@ case "$ADAPTATION_PRESET" in
     teacher_pose_transform)
         ADAPTATION_TRAINABLE_MODULES="pose_encoder pose transform_encoder transform"
         ;;
+    teacher_source_replay)
+        ADAPTATION_TRAINABLE_MODULES="encoder depth pose_encoder pose transform_encoder transform"
+        ;;
     *)
-        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform, teacher_pose_transform"
+        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform, teacher_pose_transform, teacher_source_replay"
         exit 1
         ;;
 esac
@@ -65,6 +69,8 @@ case "$START_RUN" in
             DEFAULT_MODEL_NAME="realcolon_run_d_pose_transform"
         elif [ "$ADAPTATION_PRESET" = "teacher_pose_transform" ]; then
             DEFAULT_MODEL_NAME="realcolon_run_d_teacher_pose"
+        elif [ "$ADAPTATION_PRESET" = "teacher_source_replay" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_d_teacher_source_replay"
         else
             DEFAULT_MODEL_NAME="realcolon_run_d_diag"
         fi
@@ -76,6 +82,8 @@ case "$START_RUN" in
             DEFAULT_MODEL_NAME="realcolon_run_b_pose_transform"
         elif [ "$ADAPTATION_PRESET" = "teacher_pose_transform" ]; then
             DEFAULT_MODEL_NAME="realcolon_run_b_teacher_pose"
+        elif [ "$ADAPTATION_PRESET" = "teacher_source_replay" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_b_teacher_source_replay"
         else
             DEFAULT_MODEL_NAME="realcolon_run_b_diag"
         fi
@@ -87,6 +95,8 @@ case "$START_RUN" in
             DEFAULT_MODEL_NAME="realcolon_run_a_pose_transform"
         elif [ "$ADAPTATION_PRESET" = "teacher_pose_transform" ]; then
             DEFAULT_MODEL_NAME="realcolon_run_a_teacher_pose"
+        elif [ "$ADAPTATION_PRESET" = "teacher_source_replay" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_a_teacher_source_replay"
         else
             DEFAULT_MODEL_NAME="realcolon_run_a_diag"
         fi
@@ -100,9 +110,17 @@ esac
 
 export LOAD_WEIGHTS_FOLDER="${LOAD_WEIGHTS_FOLDER:-$DEFAULT_START_WEIGHTS}"
 export LOAD_TRAINABLE_WEIGHTS_FOLDER="${LOAD_TRAINABLE_WEIGHTS_FOLDER:-$LOAD_WEIGHTS_FOLDER}"
-if [ "$ADAPTATION_PRESET" = "teacher_pose_transform" ]; then
+if [ "$ADAPTATION_PRESET" = "teacher_pose_transform" ] || [ "$ADAPTATION_PRESET" = "teacher_source_replay" ]; then
     export TEACHER_WEIGHTS_FOLDER="${TEACHER_WEIGHTS_FOLDER:-$LOAD_WEIGHTS_FOLDER}"
-    export TEACHER_CONSISTENCY_WEIGHT="${TEACHER_CONSISTENCY_WEIGHT:-0.5}"
+    if [ "$ADAPTATION_PRESET" = "teacher_source_replay" ]; then
+        export TEACHER_CONSISTENCY_WEIGHT="${TEACHER_CONSISTENCY_WEIGHT:-0.25}"
+        export SOURCE_REPLAY_WEIGHT="${SOURCE_REPLAY_WEIGHT:-1.0}"
+        export SOURCE_REPLAY_HF_REPO_ID="${SOURCE_REPLAY_HF_REPO_ID:-SmartWhatt/c3vdv2-SfM}"
+        export SOURCE_REPLAY_DEPTH_WEIGHT="${SOURCE_REPLAY_DEPTH_WEIGHT:-1.0}"
+        export SOURCE_REPLAY_POSE_WEIGHT="${SOURCE_REPLAY_POSE_WEIGHT:-0.1}"
+    else
+        export TEACHER_CONSISTENCY_WEIGHT="${TEACHER_CONSISTENCY_WEIGHT:-0.5}"
+    fi
 fi
 export MODEL_NAME="${MODEL_NAME:-$DEFAULT_MODEL_NAME}"
 
@@ -143,6 +161,8 @@ echo "    Epochs:         $EPOCHS"
 echo "    SpecularNet:    $USE_SPECULAR_NET"
 echo "    Teacher:        ${TEACHER_WEIGHTS_FOLDER:-off}"
 echo "    Teacher weight: ${TEACHER_CONSISTENCY_WEIGHT:-0.0}"
+echo "    Replay:         ${SOURCE_REPLAY_HF_REPO_ID:-off}"
+echo "    Replay weight:  ${SOURCE_REPLAY_WEIGHT:-0.0}"
 echo ""
 
 bash scripts/run_finetune_real_colon.sh

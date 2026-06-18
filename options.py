@@ -46,6 +46,7 @@ TrainModeType   = Literal["stage1", "stage2", "end_to_end",
                            "c3vdv2_stage1", "c3vdv2_stage2"]
 DataSourceType  = Literal["local", "hf"]
 TeacherConsistencyMode = Literal["relative_log_median"]
+SourceReplayDepthLossType = Literal["smooth_l1_log", "scale_invariant_log"]
 C3VDv2BestMetricType = Literal[
     "auto",
     "rmse_mm",
@@ -185,6 +186,42 @@ class TrainingConfig(BaseModel):
     teacher_consistency_mode: TeacherConsistencyMode = Field(
         default="relative_log_median",
         description="teacher consistency normalization mode",
+    )
+    source_replay_weight: float = Field(
+        default=0.0,
+        description="weight for optional C3VDv2 source replay during REALColon adaptation",
+    )
+    source_replay_hf_repo_id: Optional[str] = Field(
+        default=None,
+        description="HF repo id for C3VDv2 source replay when source_replay_weight > 0",
+    )
+    source_replay_train_split: str = Field(
+        default="train",
+        description="HF split used for source replay training batches",
+    )
+    source_replay_val_split: str = Field(
+        default="val",
+        description="HF split used for source replay validation/checkpoint selection",
+    )
+    source_replay_batch_size: Optional[int] = Field(
+        default=None,
+        description="batch size for source replay; defaults to main batch_size",
+    )
+    source_replay_depth_weight: float = Field(
+        default=1.0,
+        description="depth loss weight inside the source replay objective",
+    )
+    source_replay_pose_weight: float = Field(
+        default=0.1,
+        description="pose loss weight inside the source replay objective",
+    )
+    source_replay_depth_loss: SourceReplayDepthLossType = Field(
+        default="smooth_l1_log",
+        description="depth loss for source replay metric-scale anchoring",
+    )
+    source_replay_val_batches: int = Field(
+        default=4,
+        description="number of source replay val batches for checkpoint selection",
     )
 
     # ── C3VDv2 / fine-tuning ──────────────────────────────────────────────────

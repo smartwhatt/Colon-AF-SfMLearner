@@ -33,11 +33,11 @@ from colon_datasets.c3vdv2_metrics import (
 )
 from .c3vdv2_losses import (
     scale_invariant_log_loss,
-    pose_loss,
     compute_specular_pseudo_labels,
     specular_bce_loss,
     pps_supervised_loss,
 )
+from .c3vdv2_replay import adapt_c3vdv2_batch, supervised_pose_loss_from_batch
 from .base import BaseTrainer
 from .stage_one import StageOneTrainer
 from .stage_two import StageTwoTrainer
@@ -223,74 +223,7 @@ class _C3VDv2DataMixin(BaseTrainer):
         return super().process_batch_val(self._adapt_keys(inputs))  # type: ignore[abstract]
 
     def _adapt_keys(self, batch):
-        """
-        Maps C3VDv2Dataset keys → (key, frame_id, scale) tuple keys.
-
-        C3VDv2 key    →  Trainer tuple key
-        ─────────────────────────────────────────────────────────
-        color_curr    →  ("color",  0, 0)  ("color_aug",  0, 0)
-        color_prev    →  ("color", -1, 0)  ("color_aug", -1, 0)
-        color_next    →  ("color",  1, 0)  ("color_aug",  1, 0)
-        K (B,3,3)     →  ("K", s) and ("inv_K", s) for s in scales
-        everything else → pass-through (gt_depth, occlusion, poses…)
-        """
-        device = next(
-            (v.device for v in batch.values() if hasattr(v, "device")), None
-        )
-        out = {}
-
-        for f_id, key in {0: "color_curr", -1: "color_prev", 1: "color_next"}.items():
-            t = batch[key].to(device)
-            aug = batch.get(f"{key}_aug", batch[key]).to(device)
-            out[("color", f_id, 0)] = t
-            out[("color_aug", f_id, 0)] = aug
-
-        # Intrinsics: normalised (B,3,3) → pixel-unit (B,4,4) per scale.
-        # K_norm[0,0]=fx/512, K_norm[0,2]=cx/512, etc.
-        # BackprojectDepth / Project3D expect K in pixel units at each scale,
-        # so multiply the normalised row-0 by W//2^s and row-1 by H//2^s.
-        if "K" in batch:
-            K_norm = batch["K"].to(device)          # (B,3,3) normalised
-            B = K_norm.shape[0]
-            for s in self.opt.scales:
-                h_s = self.opt.height // (2 ** s)
-                w_s = self.opt.width  // (2 ** s)
-                K_44 = torch.zeros(B, 4, 4, device=device)
-                K_44[:, :3, :3] = K_norm
-                K_44[:, 0, :] *= w_s
-                K_44[:, 1, :] *= h_s
-                K_44[:, 3, 3] = 1.0
-                out[("K", s)] = K_44
-                out[("inv_K", s)] = torch.linalg.inv(K_44)
-
-        # Multi-scale color for smoothness losses
-        for scale in self.opt.scales[1:]:
-            h = self.opt.height // (2 ** scale)
-            w = self.opt.width // (2 ** scale)
-            for f_id in self.opt.frame_ids:
-                if ("color", f_id, 0) in out:
-                    out[("color", f_id, scale)] = F.interpolate(
-                        out[("color", f_id, 0)], [h, w],
-                        mode="bilinear", align_corners=False,
-                    )
-
-        # Pass-through remaining keys (gt_depth, occlusion, pose vectors…)
-        skip = {
-            "color_curr",
-            "color_prev",
-            "color_next",
-            "color_curr_aug",
-            "color_prev_aug",
-            "color_next_aug",
-            "K",
-            "seq",
-            "frame_idx",
-        }
-        for key, val in batch.items():
-            if key not in skip:
-                out[key] = val.to(device) if hasattr(val, "to") else val
-
-        return out
+        return adapt_c3vdv2_batch(batch, self.opt)
 
 
 # ── Stage 1 fine-tune ────────────────────────────────────────────────────────
@@ -698,29 +631,11 @@ class C3VDv2Stage2Trainer(_C3VDv2DataMixin, StageTwoTrainer):
         return summary
 
     def _supervised_pose_loss(self, inputs, outputs):
-        gt_key_map = {
-            -1: ("axang_curr2prev", "trans_curr2prev"),
-             1: ("axang_curr2next", "trans_curr2next"),
-        }
         pb = self.models.get("pose_balance")
         balance = pb.balance if pb is not None else None
-
-        total_pose = 0.0
-        n = 0
-        for f_i in self.opt.frame_ids[1:]:
-            if f_i == "s" or f_i not in gt_key_map:
-                continue
-            axk, trk = gt_key_map[f_i]
-            if axk not in inputs or ("axisangle", 0, f_i) not in outputs:
-                continue
-            pred_ax = outputs[("axisangle", 0, f_i)].squeeze(1)
-            pred_tr = outputs[("translation", 0, f_i)].squeeze(1)
-            total_pose += pose_loss(pred_ax, pred_tr, inputs[axk], inputs[trk],
-                                    balance=balance)
-            n += 1
-        if n == 0:
-            return None
-        return total_pose / n
+        return supervised_pose_loss_from_batch(
+            inputs, outputs, self.opt.frame_ids, balance=balance
+        )
 
     def compute_losses(self, inputs, outputs):
         losses = super().compute_losses(inputs, outputs)

@@ -17,6 +17,7 @@ import torch.nn as nn
 import networks
 
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
 
 
 class PoseBalanceScalar(nn.Module):
@@ -30,6 +31,17 @@ class PoseBalanceScalar(nn.Module):
         super().__init__()
         self.balance = nn.Parameter(torch.zeros(1))
 from layers import disp_to_depth, get_smooth_loss, get_smooth_bright
+from colon_datasets.c3vdv2_metrics import (
+    build_c3vdv2_valid_mask_torch,
+    depth_metric_sums_torch,
+    finalize_depth_metric_sums,
+    merge_depth_metric_sums,
+)
+from .c3vdv2_replay import (
+    adapt_c3vdv2_batch,
+    source_replay_depth_loss,
+    supervised_pose_loss_from_batch,
+)
 from .base import BaseTrainer
 
 
@@ -127,6 +139,81 @@ class StageTwoTrainer(BaseTrainer):
         return (
             bool(getattr(self.opt, "teacher_weights_folder", None))
             and float(getattr(self.opt, "teacher_consistency_weight", 0.0)) > 0.0
+        )
+
+    def _uses_source_replay(self):
+        return float(getattr(self.opt, "source_replay_weight", 0.0)) > 0.0
+
+    def build_dataloaders(self):
+        super().build_dataloaders()
+        self.source_replay_train_loader = None
+        self.source_replay_val_loader = None
+        self.source_replay_train_iter = None
+        if self._uses_source_replay():
+            self._build_source_replay_dataloaders()
+
+    def _build_source_replay_dataloaders(self):
+        repo_id = getattr(self.opt, "source_replay_hf_repo_id", None)
+        if not repo_id:
+            raise ValueError(
+                "--source_replay_hf_repo_id is required when source_replay_weight > 0"
+            )
+
+        from colon_datasets.hf_triplet_dataset import build_hf_triplet_dataset
+
+        batch_size = getattr(self.opt, "source_replay_batch_size", None)
+        batch_size = int(batch_size or self.opt.batch_size)
+
+        train_dataset = build_hf_triplet_dataset(
+            repo_id=repo_id,
+            split=getattr(self.opt, "source_replay_train_split", "train"),
+            streaming=self.opt.hf_streaming,
+            cache_dir=self.opt.hf_cache_dir,
+            target_size=(self.opt.height, self.opt.width),
+            is_train=True,
+            output_format="c3vdv2",
+            scales=self.opt.scales,
+            shuffle_buffer=self.opt.hf_shuffle_buffer,
+        )
+        val_dataset = build_hf_triplet_dataset(
+            repo_id=repo_id,
+            split=getattr(self.opt, "source_replay_val_split", "val"),
+            streaming=self.opt.hf_streaming,
+            cache_dir=self.opt.hf_cache_dir,
+            target_size=(self.opt.height, self.opt.width),
+            is_train=False,
+            output_format="c3vdv2",
+            scales=self.opt.scales,
+            shuffle_buffer=0,
+        )
+
+        train_workers = 0 if self.opt.hf_streaming else self.opt.num_workers
+        val_workers = 0 if self.opt.hf_streaming else 1
+        self.source_replay_train_loader = DataLoader(
+            train_dataset,
+            batch_size,
+            shuffle=not self.opt.hf_streaming,
+            num_workers=train_workers,
+            pin_memory=True,
+            drop_last=True,
+        )
+        self.source_replay_val_loader = DataLoader(
+            val_dataset,
+            batch_size,
+            shuffle=False,
+            num_workers=val_workers,
+            pin_memory=True,
+            drop_last=False,
+        )
+        self.source_replay_train_iter = iter(self.source_replay_train_loader)
+        print(f"Using C3VDv2 source replay dataset: {repo_id}")
+        print(
+            "  mode={} train={} val={} batch={}\n".format(
+                "streaming" if self.opt.hf_streaming else "cached",
+                self._dataset_len(train_dataset),
+                self._dataset_len(val_dataset),
+                batch_size,
+            )
         )
 
     def _build_teacher_models(self):
@@ -281,9 +368,24 @@ class StageTwoTrainer(BaseTrainer):
     # ── Forward pass ──────────────────────────────────────────────────────────
 
     def process_batch(self, inputs):
-        for key, ipt in inputs.items():
-            inputs[key] = ipt.to(self.device)
+        inputs = self._move_inputs_to_device(inputs)
+        outputs = self._forward_stage2(inputs)
+        losses = self.compute_losses(inputs, outputs)
+        if self._uses_source_replay():
+            replay_losses = self._compute_next_source_replay_losses()
+            losses.update(replay_losses)
+            losses["loss"] = losses["loss"] + replay_losses[
+                "loss_weighted/source_replay"
+            ]
+        return outputs, losses
 
+    def _move_inputs_to_device(self, inputs):
+        for key, ipt in inputs.items():
+            if hasattr(ipt, "to"):
+                inputs[key] = ipt.to(self.device)
+        return inputs
+
+    def _forward_stage2(self, inputs):
         if self.opt.pose_model_type == "shared":
             all_color_aug = torch.cat(
                 [inputs[("color_aug", i, 0)] for i in self.opt.frame_ids]
@@ -307,8 +409,143 @@ class StageTwoTrainer(BaseTrainer):
             outputs.update(self.predict_poses(inputs, features, outputs))
 
         self.generate_images_pred(inputs, outputs)
-        losses = self.compute_losses(inputs, outputs)
-        return outputs, losses
+        return outputs
+
+    def run_epoch(self):
+        if self._uses_source_replay():
+            dataset = self.source_replay_train_loader.dataset
+            if hasattr(dataset, "set_epoch"):
+                dataset.set_epoch(self.epoch)
+            self.source_replay_train_iter = iter(self.source_replay_train_loader)
+        return super().run_epoch()
+
+    def val(self):
+        if not self._uses_source_replay():
+            return super().val()
+
+        self.set_eval()
+        try:
+            inputs = next(self.val_iter)
+        except StopIteration:
+            self.val_iter = iter(self.val_loader)
+            inputs = next(self.val_iter)
+
+        with torch.no_grad():
+            outputs, losses = self.process_batch_val(inputs)
+            self.log("val", inputs, outputs, losses)
+            summary = self._log_source_replay_val_metrics()
+            if summary is not None and "rmse_mm" in summary:
+                self._maybe_save_best_model(
+                    "source_replay/rmse_mm", summary["rmse_mm"], mode="min"
+                )
+            del inputs, outputs, losses
+
+        self.set_train()
+
+    def _next_source_replay_batch(self):
+        try:
+            raw_batch = next(self.source_replay_train_iter)
+        except StopIteration:
+            self.source_replay_train_iter = iter(self.source_replay_train_loader)
+            raw_batch = next(self.source_replay_train_iter)
+        return adapt_c3vdv2_batch(raw_batch, self.opt, self.device)
+
+    def _compute_next_source_replay_losses(self):
+        replay_inputs = self._next_source_replay_batch()
+        replay_outputs = self._forward_stage2(replay_inputs)
+        return self._compute_source_replay_losses(replay_inputs, replay_outputs)
+
+    def _compute_source_replay_losses(self, inputs, outputs):
+        losses = {}
+        base_tensor = outputs[("depth", 0, 0)]
+        total = base_tensor.new_tensor(0.0)
+
+        if "gt_depth" in inputs:
+            l_depth = source_replay_depth_loss(
+                outputs[("depth", 0, 0)],
+                inputs["gt_depth"],
+                inputs.get("occlusion"),
+                getattr(self.opt, "source_replay_depth_loss", "smooth_l1_log"),
+            )
+            losses["source_replay/depth"] = l_depth
+            weighted_depth = float(self.opt.source_replay_depth_weight) * l_depth
+            losses["source_replay_weighted/depth"] = weighted_depth
+            total = total + weighted_depth
+
+        l_pose = self._source_replay_pose_loss(inputs, outputs)
+        if l_pose is not None:
+            losses["source_replay/pose"] = l_pose
+            weighted_pose = float(self.opt.source_replay_pose_weight) * l_pose
+            losses["source_replay_weighted/pose"] = weighted_pose
+            total = total + weighted_pose
+
+        source_weight = float(self.opt.source_replay_weight)
+        weighted_total = source_weight * total
+        losses["source_replay/loss"] = total
+        losses["loss_weighted/source_replay"] = weighted_total
+        return losses
+
+    def _source_replay_pose_loss(self, inputs, outputs):
+        pb = self.models.get("pose_balance")
+        balance = pb.balance if pb is not None else None
+        return supervised_pose_loss_from_batch(
+            inputs, outputs, self.opt.frame_ids, balance=balance
+        )
+
+    def _log_source_replay_val_metrics(self):
+        max_batches = max(int(getattr(self.opt, "source_replay_val_batches", 0)), 0)
+        if max_batches == 0 or self.source_replay_val_loader is None:
+            return None
+
+        metric_totals = {}
+        replay_loss_total = 0.0
+        replay_batches = 0
+
+        for batch_idx, raw_inputs in enumerate(self.source_replay_val_loader):
+            if batch_idx >= max_batches:
+                break
+            inputs = adapt_c3vdv2_batch(raw_inputs, self.opt, self.device)
+            outputs = self._forward_stage2(inputs)
+            replay_losses = self._compute_source_replay_losses(inputs, outputs)
+            replay_batches += 1
+            replay_loss_total += float(replay_losses["source_replay/loss"].detach().cpu())
+
+            if "gt_depth" in inputs and ("depth", 0, 0) in outputs:
+                merge_depth_metric_sums(
+                    metric_totals,
+                    depth_metric_sums_torch(
+                        inputs["gt_depth"],
+                        outputs[("depth", 0, 0)],
+                        build_c3vdv2_valid_mask_torch(
+                            inputs["gt_depth"], inputs.get("occlusion")
+                        ),
+                    ),
+                )
+            del raw_inputs, inputs, outputs, replay_losses
+
+        if replay_batches == 0:
+            return None
+
+        summary = {
+            "loss": replay_loss_total / replay_batches,
+            "batches": replay_batches,
+        }
+        writer = self.writers["val"]
+        writer.add_scalar("source_replay/loss", summary["loss"], self.step)
+        writer.add_scalar("source_replay/batches", replay_batches, self.step)
+
+        metrics = finalize_depth_metric_sums(metric_totals)
+        if metrics["valid_pixels"] > 0:
+            for key in (
+                "abs_rel", "sq_rel", "rmse", "rmse_mm",
+                "rmse_log", "a1", "a2", "a3",
+            ):
+                writer.add_scalar(f"source_replay/{key}", metrics[key], self.step)
+            writer.add_scalar(
+                "source_replay/valid_pixels", metrics["valid_pixels"], self.step
+            )
+            summary.update(metrics)
+        return summary
 
     # ── Losses ────────────────────────────────────────────────────────────────
 

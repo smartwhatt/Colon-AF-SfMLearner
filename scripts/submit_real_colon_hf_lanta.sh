@@ -15,6 +15,7 @@
 #   bash scripts/submit_real_colon_hf_lanta.sh
 #   ADAPTATION_PRESET=full START_RUN=run_d bash scripts/submit_real_colon_hf_lanta.sh
 #   ADAPTATION_PRESET=teacher_pose_transform START_RUN=run_b bash scripts/submit_real_colon_hf_lanta.sh
+#   ADAPTATION_PRESET=teacher_source_replay START_RUN=run_d bash scripts/submit_real_colon_hf_lanta.sh
 #
 # The login/submit node prefetches the Hugging Face dataset into a shared cache.
 # The SLURM job then runs with HF offline flags and DATA_SOURCE=hf,
@@ -37,6 +38,7 @@ export HF_HOME="${HF_HOME:-/scratch/lt200353-pcllm/swattana/hf_cache/home}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_CACHE_DIR}"
 export TORCH_HOME="${TORCH_HOME:-$HF_HOME/torch}"
 export CACHE_READY_MARKER="${CACHE_READY_MARKER:-$HF_CACHE_DIR/.real_colon_sfm_ready}"
+export SOURCE_REPLAY_CACHE_READY_MARKER="${SOURCE_REPLAY_CACHE_READY_MARKER:-$HF_CACHE_DIR/.c3vdv2_sfm_replay_ready}"
 
 # =============================================================================
 # TRAINING DEFAULTS
@@ -66,8 +68,11 @@ case "$ADAPTATION_PRESET" in
     teacher_pose_transform)
         ADAPTATION_TRAINABLE_MODULES="pose_encoder pose transform_encoder transform"
         ;;
+    teacher_source_replay)
+        ADAPTATION_TRAINABLE_MODULES="encoder depth pose_encoder pose transform_encoder transform"
+        ;;
     *)
-        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform, teacher_pose_transform"
+        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform, teacher_pose_transform, teacher_source_replay"
         exit 1
         ;;
 esac
@@ -84,6 +89,8 @@ case "$START_RUN" in
             DEFAULT_MODEL_NAME="realcolon_run_d_pose_transform"
         elif [ "$ADAPTATION_PRESET" = "teacher_pose_transform" ]; then
             DEFAULT_MODEL_NAME="realcolon_run_d_teacher_pose"
+        elif [ "$ADAPTATION_PRESET" = "teacher_source_replay" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_d_teacher_source_replay"
         else
             DEFAULT_MODEL_NAME="realcolon_run_d_diag"
         fi
@@ -95,6 +102,8 @@ case "$START_RUN" in
             DEFAULT_MODEL_NAME="realcolon_run_b_pose_transform"
         elif [ "$ADAPTATION_PRESET" = "teacher_pose_transform" ]; then
             DEFAULT_MODEL_NAME="realcolon_run_b_teacher_pose"
+        elif [ "$ADAPTATION_PRESET" = "teacher_source_replay" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_b_teacher_source_replay"
         else
             DEFAULT_MODEL_NAME="realcolon_run_b_diag"
         fi
@@ -106,6 +115,8 @@ case "$START_RUN" in
             DEFAULT_MODEL_NAME="realcolon_run_a_pose_transform"
         elif [ "$ADAPTATION_PRESET" = "teacher_pose_transform" ]; then
             DEFAULT_MODEL_NAME="realcolon_run_a_teacher_pose"
+        elif [ "$ADAPTATION_PRESET" = "teacher_source_replay" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_a_teacher_source_replay"
         else
             DEFAULT_MODEL_NAME="realcolon_run_a_diag"
         fi
@@ -119,9 +130,17 @@ esac
 
 export LOAD_WEIGHTS_FOLDER="${LOAD_WEIGHTS_FOLDER:-$DEFAULT_START_WEIGHTS}"
 export LOAD_TRAINABLE_WEIGHTS_FOLDER="${LOAD_TRAINABLE_WEIGHTS_FOLDER:-$LOAD_WEIGHTS_FOLDER}"
-if [ "$ADAPTATION_PRESET" = "teacher_pose_transform" ]; then
+if [ "$ADAPTATION_PRESET" = "teacher_pose_transform" ] || [ "$ADAPTATION_PRESET" = "teacher_source_replay" ]; then
     export TEACHER_WEIGHTS_FOLDER="${TEACHER_WEIGHTS_FOLDER:-$LOAD_WEIGHTS_FOLDER}"
-    export TEACHER_CONSISTENCY_WEIGHT="${TEACHER_CONSISTENCY_WEIGHT:-0.5}"
+    if [ "$ADAPTATION_PRESET" = "teacher_source_replay" ]; then
+        export TEACHER_CONSISTENCY_WEIGHT="${TEACHER_CONSISTENCY_WEIGHT:-0.25}"
+        export SOURCE_REPLAY_WEIGHT="${SOURCE_REPLAY_WEIGHT:-1.0}"
+        export SOURCE_REPLAY_HF_REPO_ID="${SOURCE_REPLAY_HF_REPO_ID:-SmartWhatt/c3vdv2-SfM}"
+        export SOURCE_REPLAY_DEPTH_WEIGHT="${SOURCE_REPLAY_DEPTH_WEIGHT:-1.0}"
+        export SOURCE_REPLAY_POSE_WEIGHT="${SOURCE_REPLAY_POSE_WEIGHT:-0.1}"
+    else
+        export TEACHER_CONSISTENCY_WEIGHT="${TEACHER_CONSISTENCY_WEIGHT:-0.5}"
+    fi
 fi
 export MODEL_NAME="${MODEL_NAME:-$DEFAULT_MODEL_NAME}"
 
@@ -144,6 +163,7 @@ export SPECULAR_THRESHOLD="${SPECULAR_THRESHOLD:-0.98}"
 # Splits required by training. Add "test" if you also want it cached for later
 # ad-hoc inspection from compute nodes.
 export PREFETCH_SPLITS="${PREFETCH_SPLITS:-train val}"
+export SOURCE_REPLAY_PREFETCH_SPLITS="${SOURCE_REPLAY_PREFETCH_SPLITS:-train val}"
 export PREFETCH_HF="${PREFETCH_HF:-1}"
 export PREFETCH_TORCHVISION="${PREFETCH_TORCHVISION:-1}"
 
@@ -163,21 +183,22 @@ setup_runtime() {
     fi
 }
 
-prefetch_hf_dataset() {
-    if [ "$PREFETCH_HF" != "1" ]; then
-        log "Skipping HF prefetch (PREFETCH_HF=$PREFETCH_HF)"
-        return
-    fi
+prefetch_hf_repo() {
+    local repo_id="$1"
+    local splits="$2"
+    local marker="$3"
+    local label="$4"
 
-    log "Prefetching Hugging Face dataset on submit node"
-    echo "  Repo:        $HF_REPO_ID"
-    echo "  Splits:      $PREFETCH_SPLITS"
+    log "Prefetching Hugging Face dataset on submit node: $label"
+    echo "  Repo:        $repo_id"
+    echo "  Splits:      $splits"
     echo "  HF cache:    $HF_CACHE_DIR"
     echo "  HF_HOME:     $HF_HOME"
+    echo "  Marker:      $marker"
     mkdir -p "$HF_CACHE_DIR" "$HF_HOME"
 
     cd "$PROJECT_DIR"
-    uv run python - "$HF_REPO_ID" "$HF_CACHE_DIR" "$PREFETCH_SPLITS" <<'PY'
+    uv run python - "$repo_id" "$HF_CACHE_DIR" "$splits" <<'PY'
 import sys
 from datasets import VerificationMode, load_dataset
 
@@ -200,7 +221,28 @@ for split in split_text.split():
     print(f"Cached {repo_id} split={split} rows={n_rows}", flush=True)
 PY
 
-    touch "$CACHE_READY_MARKER"
+    touch "$marker"
+}
+
+prefetch_hf_dataset() {
+    if [ "$PREFETCH_HF" != "1" ]; then
+        log "Skipping HF prefetch (PREFETCH_HF=$PREFETCH_HF)"
+        return
+    fi
+
+    prefetch_hf_repo "$HF_REPO_ID" "$PREFETCH_SPLITS" "$CACHE_READY_MARKER" "REALColon"
+
+    if [ "${SOURCE_REPLAY_WEIGHT:-0.0}" != "0" ] && [ "${SOURCE_REPLAY_WEIGHT:-0.0}" != "0.0" ]; then
+        if [ -z "${SOURCE_REPLAY_HF_REPO_ID:-}" ]; then
+            echo "ERROR: SOURCE_REPLAY_HF_REPO_ID is required when SOURCE_REPLAY_WEIGHT > 0"
+            exit 1
+        fi
+        prefetch_hf_repo \
+            "$SOURCE_REPLAY_HF_REPO_ID" \
+            "$SOURCE_REPLAY_PREFETCH_SPLITS" \
+            "$SOURCE_REPLAY_CACHE_READY_MARKER" \
+            "C3VDv2 source replay"
+    fi
 }
 
 prefetch_torchvision_weights() {
@@ -245,8 +287,11 @@ submit_job() {
     echo "  Trainable:    $ADAPTATION_TRAINABLE_MODULES"
     echo "  Teacher:      ${TEACHER_WEIGHTS_FOLDER:-off}"
     echo "  Teacher wt:   ${TEACHER_CONSISTENCY_WEIGHT:-0.0}"
+    echo "  Replay:       ${SOURCE_REPLAY_HF_REPO_ID:-off}"
+    echo "  Replay wt:    ${SOURCE_REPLAY_WEIGHT:-0.0}"
     echo "  Run dir:      $LOG_DIR/$MODEL_NAME"
     echo "  Cache marker: $CACHE_READY_MARKER"
+    echo "  Replay mark:  ${SOURCE_REPLAY_CACHE_READY_MARKER:-off}"
     echo ""
 
     sbatch --export=ALL "$SCRIPT_PATH"
@@ -261,6 +306,13 @@ run_slurm_job() {
         echo "ERROR: HF cache marker not found: $CACHE_READY_MARKER"
         echo "Run this script with bash on a login/submit node before using sbatch directly."
         exit 1
+    fi
+    if [ "${SOURCE_REPLAY_WEIGHT:-0.0}" != "0" ] && [ "${SOURCE_REPLAY_WEIGHT:-0.0}" != "0.0" ]; then
+        if [ ! -f "$SOURCE_REPLAY_CACHE_READY_MARKER" ]; then
+            echo "ERROR: source replay HF cache marker not found: $SOURCE_REPLAY_CACHE_READY_MARKER"
+            echo "Run this script with bash on a login/submit node before using sbatch directly."
+            exit 1
+        fi
     fi
 
     export HF_HUB_OFFLINE=1
@@ -285,6 +337,8 @@ run_slurm_job() {
     echo "  Trainable:    $ADAPTATION_TRAINABLE_MODULES"
     echo "  Teacher:      ${TEACHER_WEIGHTS_FOLDER:-off}"
     echo "  Teacher wt:   ${TEACHER_CONSISTENCY_WEIGHT:-0.0}"
+    echo "  Replay:       ${SOURCE_REPLAY_HF_REPO_ID:-off}"
+    echo "  Replay wt:    ${SOURCE_REPLAY_WEIGHT:-0.0}"
     echo ""
 
     bash scripts/run_finetune_real_colon.sh
