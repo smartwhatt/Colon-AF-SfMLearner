@@ -40,6 +40,7 @@ NumLayersType   = Literal[18, 34, 50, 101, 152]
 WeightsInitType = Literal["pretrained", "scratch"]
 PoseInputType   = Literal["pairs", "all"]
 PoseModelType   = Literal["posecnn", "separate_resnet", "shared"]
+DepthBackendType = Literal["af_sfm", "depth_anything"]
 EvalSplitType   = Literal["eigen", "eigen_benchmark", "benchmark",
                            "odom_9", "odom_10", "endovis"]
 TrainModeType   = Literal["stage1", "stage2", "end_to_end",
@@ -174,6 +175,27 @@ class TrainingConfig(BaseModel):
     trainable_modules: List[str] = Field(
         default=[],
         description="optional Stage 2 module allowlist to train; empty keeps default behavior",
+    )
+    depth_backend: DepthBackendType = Field(
+        default="af_sfm",
+        description=(
+            "depth model family: af_sfm (ResnetEncoder+DepthDecoder, default) "
+            "or depth_anything (DA-v2 via transformers)"
+        ),
+    )
+    depth_anything_repo: Optional[str] = Field(
+        default=None,
+        description=(
+            "HF repo id for DA-v2 when depth_backend=depth_anything "
+            "(e.g. depth-anything/Depth-Anything-V2-Metric-Hypersim-Large)"
+        ),
+    )
+    depth_anything_frozen: bool = Field(
+        default=True,
+        description=(
+            "freeze DA-v2 weights during SSL training "
+            "(recommended for the known-good-depth experiment)"
+        ),
     )
     teacher_weights_folder: Optional[str] = Field(
         default=None,

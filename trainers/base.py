@@ -158,6 +158,10 @@ class BaseTrainer(ABC):
 
     # ── Optional overrides ────────────────────────────────────────────────────
 
+    def _should_skip_save(self, model_name):
+        """Hook for trainers to skip saving a module (e.g. frozen DA-v2 from HF)."""
+        return False
+
     def build_optimizers(self):
         """Single Adam optimizer over self.parameters_to_train."""
         self.model_optimizer = optim.Adam(
@@ -696,6 +700,8 @@ class BaseTrainer(ABC):
 
         for model_name, model in self.models.items():
             if model_name.startswith("teacher_"):
+                continue
+            if self._should_skip_save(model_name):
                 continue
             to_save = model.state_dict()
             if model_name == "encoder":

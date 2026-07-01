@@ -57,13 +57,26 @@ class StageTwoTrainer(BaseTrainer):
     )
 
     def build_models(self):
+        self._validate_depth_backend()
+
         # Depth
-        self.models["encoder"] = networks.ResnetEncoder(
-            self.opt.num_layers, self.opt.weights_init == "pretrained"
-        ).to(self.device)
-        self.models["depth"] = networks.DepthDecoder(
-            self.models["encoder"].num_ch_enc, self.opt.scales
-        ).to(self.device)
+        if self.opt.depth_backend == "depth_anything":
+            encoder, depth = networks.build_depth_anything_pair(
+                hf_repo_id=self.opt.depth_anything_repo,
+                scales=tuple(self.opt.scales),
+                min_depth=self.opt.min_depth,
+                max_depth=self.opt.max_depth,
+                frozen=bool(self.opt.depth_anything_frozen),
+            )
+            self.models["encoder"] = encoder.to(self.device)
+            self.models["depth"] = depth.to(self.device)
+        else:
+            self.models["encoder"] = networks.ResnetEncoder(
+                self.opt.num_layers, self.opt.weights_init == "pretrained"
+            ).to(self.device)
+            self.models["depth"] = networks.DepthDecoder(
+                self.models["encoder"].num_ch_enc, self.opt.scales
+            ).to(self.device)
         self.parameters_to_train += list(self.models["encoder"].parameters())
         self.parameters_to_train += list(self.models["depth"].parameters())
 
@@ -233,6 +246,64 @@ class StageTwoTrainer(BaseTrainer):
             for param in self.models[name].parameters():
                 param.requires_grad = False
 
+    # ── Depth Anything V2 backend ────────────────────────────────────────────
+
+    _DEPTH_ANYTHING_KEYS = ("encoder", "depth")
+
+    def _uses_depth_anything(self):
+        return getattr(self.opt, "depth_backend", "af_sfm") == "depth_anything"
+
+    def _depth_anything_frozen(self):
+        return self._uses_depth_anything() and bool(
+            getattr(self.opt, "depth_anything_frozen", True)
+        )
+
+    def _validate_depth_backend(self):
+        """Guard incompatible combinations before building models."""
+        if not self._uses_depth_anything():
+            return
+        if self.opt.pose_model_type == "shared":
+            raise ValueError(
+                "depth_backend='depth_anything' is incompatible with "
+                "pose_model_type='shared' (DA-v2's DPT encoder cannot be "
+                "shared with the pose ResNet). Use pose_model_type="
+                "'separate_resnet' (the default)."
+            )
+        if getattr(self.opt, "use_specular_net", False):
+            raise ValueError(
+                "depth_backend='depth_anything' is incompatible with "
+                "use_specular_net (the specular head attaches to the ResNet "
+                "encoder skips, which DA-v2 does not expose)."
+            )
+        if getattr(self.opt, "predictive_mask", False):
+            raise ValueError(
+                "depth_backend='depth_anything' is incompatible with "
+                "predictive_mask (the mask head attaches to the ResNet "
+                "encoder skips, which DA-v2 does not expose)."
+            )
+        if not getattr(self.opt, "depth_anything_repo", None) and self._uses_depth_anything():
+            raise ValueError(
+                "depth_backend='depth_anything' requires --depth_anything_repo"
+            )
+
+    def _freeze_depth_anything(self):
+        """Re-assert freeze on the DA-v2 pair (mirrors teacher discipline)."""
+        if not self._depth_anything_frozen():
+            return
+        for name in self._DEPTH_ANYTHING_KEYS:
+            if name not in self.models:
+                continue
+            self.models[name].eval()
+            for param in self.models[name].parameters():
+                param.requires_grad = False
+
+    def _should_skip_save(self, model_name):
+        """Frozen DA-v2 is re-loadable from HF; skip it to keep checkpoints small."""
+        return (
+            self._depth_anything_frozen()
+            and model_name in self._DEPTH_ANYTHING_KEYS
+        )
+
     def _trainable_module_allowlist(self):
         modules = getattr(self.opt, "trainable_modules", []) or []
         unique_modules = []
@@ -291,6 +362,11 @@ class StageTwoTrainer(BaseTrainer):
         for n in self.opt.models_to_load:
             if n not in self.models:
                 continue
+            if self._uses_depth_anything() and n in self._DEPTH_ANYTHING_KEYS:
+                # DA-v2 is built from HF; AF-SfM encoder.pth/depth.pth are
+                # an incompatible format and must not be loaded into it.
+                print("Skipping {} load (depth_backend=depth_anything)".format(n))
+                continue
             print("Loading {} weights...".format(n))
             self._load_model_weights(self.opt.load_weights_folder, n)
             self.models[n].eval()
@@ -305,6 +381,9 @@ class StageTwoTrainer(BaseTrainer):
             for n in self.opt.trainable_models_to_load:
                 if n not in self.models or n in self.opt.models_to_load:
                     continue
+                if self._uses_depth_anything() and n in self._DEPTH_ANYTHING_KEYS:
+                    print("Skipping {} trainable load (depth_backend=depth_anything)".format(n))
+                    continue
                 path = os.path.join(trainable_folder, "{}.pth".format(n))
                 if not os.path.isfile(path):
                     print("Skipping {} weights (not found)".format(n))
@@ -317,6 +396,7 @@ class StageTwoTrainer(BaseTrainer):
         self._load_teacher_weights()
         self._apply_trainable_module_allowlist()
         self._freeze_teacher_models()
+        self._freeze_depth_anything()
 
         print("Adam is randomly initialized")
 
@@ -352,18 +432,21 @@ class StageTwoTrainer(BaseTrainer):
                 else:
                     model.eval()
             self._freeze_teacher_models()
+            self._freeze_depth_anything()
             return
 
         for name in self._DEFAULT_TRAIN_MODELS:
             if name in self.models:
                 self.models[name].train()
         self._freeze_teacher_models()
+        self._freeze_depth_anything()
 
     def set_eval(self):
         for name in self._DEFAULT_TRAIN_MODELS:
             if name in self.models:
                 self.models[name].eval()
         self._freeze_teacher_models()
+        self._freeze_depth_anything()
 
     # ── Forward pass ──────────────────────────────────────────────────────────
 

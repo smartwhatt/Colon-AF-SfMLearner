@@ -95,8 +95,22 @@ case "$ADAPTATION_PRESET" in
         : "${SOURCE_REPLAY_WEIGHT:=1.0}"
         : "${SOURCE_REPLAY_HF_REPO_ID:=SmartWhatt/c3vdv2-SfM}"
         ;;
+    depth_anything_frozen)
+        # Frozen DA-v2 as a known-good depth anchor; only pose+transform adapt.
+        TRAINABLE_MODULES=(pose_encoder pose transform_encoder transform)
+        DEPTH_BACKEND=depth_anything
+        : "${DEPTH_ANYTHING_REPO:=depth-anything/Depth-Anything-V2-Metric-Hypersim-Large}"
+        DEPTH_ANYTHING_FROZEN=1
+        ;;
+    depth_anything_trainable)
+        # DA-v2 depth is trainable alongside pose+transform.
+        TRAINABLE_MODULES=(encoder depth pose_encoder pose transform_encoder transform)
+        DEPTH_BACKEND=depth_anything
+        : "${DEPTH_ANYTHING_REPO:=depth-anything/Depth-Anything-V2-Metric-Hypersim-Large}"
+        DEPTH_ANYTHING_FROZEN=0
+        ;;
     *)
-        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform, teacher_pose_transform, teacher_source_replay"
+        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform, teacher_pose_transform, teacher_source_replay, depth_anything_frozen, depth_anything_trainable"
         exit 1
         ;;
 esac
@@ -116,6 +130,11 @@ SOURCE_REPLAY_DEPTH_WEIGHT="${SOURCE_REPLAY_DEPTH_WEIGHT:-1.0}"
 SOURCE_REPLAY_POSE_WEIGHT="${SOURCE_REPLAY_POSE_WEIGHT:-0.1}"
 SOURCE_REPLAY_DEPTH_LOSS="${SOURCE_REPLAY_DEPTH_LOSS:-smooth_l1_log}"
 SOURCE_REPLAY_VAL_BATCHES="${SOURCE_REPLAY_VAL_BATCHES:-4}"
+
+# Depth Anything V2 backend (opt-in via the depth_anything_* presets).
+DEPTH_BACKEND="${DEPTH_BACKEND:-af_sfm}"
+DEPTH_ANYTHING_REPO="${DEPTH_ANYTHING_REPO:-}"
+DEPTH_ANYTHING_FROZEN="${DEPTH_ANYTHING_FROZEN:-1}"
 
 log() { echo -e "\n\033[1;36m>>> $*\033[0m\n"; }
 
@@ -220,6 +239,11 @@ run_stage2_adaptation() {
     else
         echo "  SpecularNet:  OFF"
     fi
+    if [ "$DEPTH_BACKEND" = "depth_anything" ]; then
+        echo "  Depth:        DA-v2 ($DEPTH_ANYTHING_REPO) frozen=$DEPTH_ANYTHING_FROZEN"
+    else
+        echo "  Depth:        AF-SfM (ResnetEncoder+DepthDecoder)"
+    fi
     if [ -n "$TEACHER_WEIGHTS_FOLDER" ]; then
         echo "  Teacher:      $TEACHER_WEIGHTS_FOLDER"
         echo "  Teacher loss: $TEACHER_CONSISTENCY_MODE weight=$TEACHER_CONSISTENCY_WEIGHT"
@@ -297,6 +321,16 @@ run_stage2_adaptation() {
             --specular_loss_weight "$SPECULAR_LOSS_WEIGHT"
             --specular_threshold "$SPECULAR_THRESHOLD"
         )
+    fi
+
+    if [ "$DEPTH_BACKEND" = "depth_anything" ]; then
+        cmd+=(
+            --depth_backend depth_anything
+            --depth_anything_repo "$DEPTH_ANYTHING_REPO"
+        )
+        if [ "$DEPTH_ANYTHING_FROZEN" = "1" ]; then
+            cmd+=(--depth_anything_frozen)
+        fi
     fi
 
     CUDA_VISIBLE_DEVICES=$GPU "${cmd[@]}"

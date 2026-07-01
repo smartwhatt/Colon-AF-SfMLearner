@@ -29,26 +29,33 @@ from colon_datasets.polysense3d_sparse_dataset import (  # noqa: E402
     PolypSense3DSparseDepthDataset,
     sample_depth_at_points,
 )
-from networks import DepthDecoder, ResnetEncoder  # noqa: E402
+from tools.depth_backend import (  # noqa: E402
+    load_depth_model,
+    predict_depth_m,
+    requires_weights_folder,
+)
 
 
 POINT_METRIC_KEYS = ("mae_mm", "rmse_mm", "abs_rel", "log10", "a1", "a2")
 
 
-def _load_model(weights_folder: Path, device: torch.device):
-    encoder = ResnetEncoder(18, False)
-    depth_decoder = DepthDecoder(encoder.num_ch_enc, scales=range(4))
-
-    encoder.load_state_dict(
-        torch.load(weights_folder / "encoder.pth", map_location="cpu"),
-        strict=False,
+def _load_model(
+    weights_folder,
+    device: torch.device,
+    *,
+    depth_backend: str = "af_sfm",
+    depth_anything_repo: str = None,
+    min_depth: float = 0.001,
+    max_depth: float = 0.1,
+):
+    return load_depth_model(
+        depth_backend=depth_backend,
+        weights_folder=weights_folder,
+        device=device,
+        min_depth=min_depth,
+        max_depth=max_depth,
+        depth_anything_repo=depth_anything_repo,
     )
-    depth_decoder.load_state_dict(
-        torch.load(weights_folder / "depth.pth", map_location="cpu")
-    )
-    encoder.eval().to(device)
-    depth_decoder.eval().to(device)
-    return encoder, depth_decoder
 
 
 def _predict_depth_m(
@@ -57,15 +64,15 @@ def _predict_depth_m(
     *,
     min_depth: float,
     max_depth: float,
+    depth_backend: str = "af_sfm",
 ) -> np.ndarray:
-    encoder, depth_decoder = model
-    features = encoder(color)
-    outputs = depth_decoder(features)
-    disp = outputs[("disp", 0)]
-    min_disp = 1.0 / max_depth
-    max_disp = 1.0 / min_depth
-    scaled_disp = min_disp + (max_disp - min_disp) * disp
-    depth = 1.0 / scaled_disp
+    depth = predict_depth_m(
+        model,
+        color,
+        min_depth=min_depth,
+        max_depth=max_depth,
+        depth_backend=depth_backend,
+    )
     return depth.squeeze(0).squeeze(0).detach().cpu().numpy()
 
 
@@ -452,18 +459,33 @@ def evaluate(args) -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Normalize depth-backend attributes so legacy callers / test stubs that
+    # predate the depth_backend option still default to af_sfm.
+    depth_backend = getattr(args, "depth_backend", "af_sfm") or "af_sfm"
+    depth_anything_repo = getattr(args, "depth_anything_repo", None)
+
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
-    weights_folder = Path(args.weights_folder).expanduser()
-    for filename in ("encoder.pth", "depth.pth"):
-        if not (weights_folder / filename).is_file():
-            raise FileNotFoundError(f"Missing {filename} under {weights_folder}")
+    weights_folder = Path(args.weights_folder).expanduser() if args.weights_folder else None
+    if requires_weights_folder(depth_backend):
+        if weights_folder is None:
+            raise ValueError("--weights_folder is required for depth_backend=af_sfm")
+        for filename in ("encoder.pth", "depth.pth"):
+            if not (weights_folder / filename).is_file():
+                raise FileNotFoundError(f"Missing {filename} under {weights_folder}")
 
     dataset = PolypSense3DSparseDepthDataset(
         args.data_root,
         target_size=(args.height, args.width),
         strict=not args.allow_manifest_errors,
     )
-    model = _load_model(weights_folder, device)
+    model = _load_model(
+        weights_folder,
+        device,
+        depth_backend=depth_backend,
+        depth_anything_repo=depth_anything_repo,
+        min_depth=args.min_depth,
+        max_depth=args.max_depth,
+    )
 
     point_rows: list[dict] = []
     frame_rows: list[dict] = []
@@ -479,6 +501,7 @@ def evaluate(args) -> None:
                 color,
                 min_depth=args.min_depth,
                 max_depth=args.max_depth,
+                depth_backend=depth_backend,
             )
             value_points = sample["value_points"].numpy()
             top_points = sample["top_points"].numpy()
@@ -804,7 +827,23 @@ def main() -> None:
         description="Evaluate metric sparse depth on PolypSense3D clinical labels."
     )
     parser.add_argument("--data_root", required=True)
-    parser.add_argument("--weights_folder", required=True)
+    parser.add_argument(
+        "--weights_folder",
+        default=None,
+        help="Folder of AF-SfM encoder.pth/depth.pth. Required for depth_backend=af_sfm; "
+        "ignored for depth_backend=depth_anything (loads from HF).",
+    )
+    parser.add_argument(
+        "--depth_backend",
+        choices=["af_sfm", "depth_anything"],
+        default="af_sfm",
+        help="Depth model family to evaluate. depth_anything loads DA-v2 from HF.",
+    )
+    parser.add_argument(
+        "--depth_anything_repo",
+        default=None,
+        help="HF repo id for DA-v2 when depth_backend=depth_anything.",
+    )
     parser.add_argument("--out_dir", default="reports/polysense3d/sparse_depth")
     parser.add_argument("--run_id", default="polysense3d_sparse")
     parser.add_argument("--height", type=int, default=256)

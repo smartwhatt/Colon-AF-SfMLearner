@@ -66,6 +66,11 @@ from colon_datasets.c3vdv2_metrics import (
     build_c3vdv2_valid_mask_np,
     compute_depth_metrics_np,
 )
+from tools.depth_backend import (
+    load_depth_model,
+    predict_depth_m,
+    requires_weights_folder,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -475,21 +480,35 @@ def _batch_metadata(batch):
 def evaluate(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Normalize depth-backend attributes so legacy callers / test stubs that
+    # predate the depth_backend option still default to af_sfm.
+    depth_backend = getattr(args, "depth_backend", "af_sfm") or "af_sfm"
+    depth_anything_repo = getattr(args, "depth_anything_repo", None)
+
+    if getattr(args, "load_specular_weights", False) and depth_backend == "depth_anything":
+        raise ValueError(
+            "depth_backend='depth_anything' is incompatible with "
+            "--load_specular_weights (DA-v2 does not expose a specular head)."
+        )
+
     # ---- Load model ------------------------------------------------------
-    encoder = ResnetEncoder(18, False)
-    depth_decoder = DepthDecoder(encoder.num_ch_enc, scales=range(4))
-
-    encoder.load_state_dict(
-        torch.load(os.path.join(args.weights_folder, "encoder.pth"), map_location="cpu"),
-        strict=False,
+    model = load_depth_model(
+        depth_backend=depth_backend,
+        weights_folder=args.weights_folder,
+        device=device,
+        min_depth=C3VD_MIN_DEPTH,
+        max_depth=C3VD_MAX_DEPTH,
+        depth_anything_repo=depth_anything_repo,
     )
-    depth_decoder.load_state_dict(
-        torch.load(os.path.join(args.weights_folder, "depth.pth"), map_location="cpu")
-    )
-    encoder.eval().to(device)
-    depth_decoder.eval().to(device)
+    # AF-SfM backend returns an (encoder, depth_decoder) tuple; DA-v2 returns
+    # a single adapter. Unify so the specular + prediction paths below read
+    # cleanly.
+    if depth_backend == "af_sfm":
+        encoder, depth_decoder = model
+    else:
+        encoder, depth_decoder = None, None
 
-    # ---- Optional specular model -----------------------------------------
+    # ---- Optional specular model (AF-SfM only) ---------------------------
     specular_decoder = None
     if args.load_specular_weights:
         specular_path = os.path.join(args.weights_folder, "specular.pth")
@@ -520,14 +539,14 @@ def evaluate(args):
             gt_depth = batch["gt_depth"].numpy().squeeze()  # H,W
             seq, frame_idx = _batch_metadata(batch)
 
-            features = encoder(color_curr)
-            depth_out = depth_decoder(features)
-            disp = depth_out[("disp", 0)].cpu().numpy().squeeze()
-
-            # Convert disparity to metric depth
-            pred_depth = 1.0 / (
-                disp * (1 / C3VD_MIN_DEPTH - 1 / C3VD_MAX_DEPTH) + 1 / C3VD_MAX_DEPTH
+            pred_depth_t = predict_depth_m(
+                model,
+                color_curr,
+                min_depth=C3VD_MIN_DEPTH,
+                max_depth=C3VD_MAX_DEPTH,
+                depth_backend=depth_backend,
             )
+            pred_depth = pred_depth_t.cpu().numpy().squeeze()
 
             # Build validity mask
             valid_mask = build_c3vdv2_valid_mask_np(gt_depth)
@@ -725,7 +744,25 @@ if __name__ == "__main__":
     parser.add_argument("--hf_split", default="test")
     parser.add_argument("--hf_streaming", action="store_true")
     parser.add_argument("--hf_cache_dir", default=None)
-    parser.add_argument("--weights_folder", "--load_weights_folder", dest="weights_folder", required=True)
+    parser.add_argument(
+        "--weights_folder",
+        "--load_weights_folder",
+        dest="weights_folder",
+        default=None,
+        help="Folder of AF-SfM encoder.pth/depth.pth. Required for depth_backend=af_sfm; "
+        "ignored for depth_backend=depth_anything (loads from HF).",
+    )
+    parser.add_argument(
+        "--depth_backend",
+        choices=["af_sfm", "depth_anything"],
+        default="af_sfm",
+        help="Depth model family to evaluate. depth_anything loads DA-v2 from HF.",
+    )
+    parser.add_argument(
+        "--depth_anything_repo",
+        default=None,
+        help="HF repo id for DA-v2 when depth_backend=depth_anything.",
+    )
     parser.add_argument(
         "--seg_root",
         default=None,
@@ -759,6 +796,11 @@ if __name__ == "__main__":
                         help="Load specular.pth from weights_folder for model-based specular metrics.")
 
     args = parser.parse_args()
+
+    if requires_weights_folder(args.depth_backend) and args.weights_folder is None:
+        parser.error("--weights_folder is required when depth_backend=af_sfm")
+    if args.depth_backend == "depth_anything" and not args.depth_anything_repo:
+        parser.error("--depth_anything_repo is required when depth_backend=depth_anything")
 
     if args.data_source == "hf":
         if args.hf_repo_id is None:

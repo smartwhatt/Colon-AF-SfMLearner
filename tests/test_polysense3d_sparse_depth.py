@@ -234,11 +234,13 @@ def test_evaluator_writes_outputs_with_mocked_model(tmp_path, monkeypatch):
     (weights / "depth.pth").write_bytes(b"stub")
     out_dir = tmp_path / "out"
 
-    monkeypatch.setattr(polysense_eval, "_load_model", lambda weights_folder, device: object())
+    monkeypatch.setattr(
+        polysense_eval, "_load_model", lambda weights_folder, device, **kw: object()
+    )
     monkeypatch.setattr(
         polysense_eval,
         "_predict_depth_m",
-        lambda model, color, min_depth, max_depth: np.full((5, 10), 0.0125, dtype=np.float32),
+        lambda model, color, min_depth, max_depth, **kw: np.full((5, 10), 0.0125, dtype=np.float32),
     )
 
     args = type(

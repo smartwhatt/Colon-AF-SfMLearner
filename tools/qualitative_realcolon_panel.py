@@ -33,7 +33,11 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from colon_datasets.hf_triplet_dataset import build_hf_triplet_dataset  # noqa: E402
-from networks import DepthDecoder, ResnetEncoder  # noqa: E402
+from tools.depth_backend import (  # noqa: E402
+    load_depth_model,
+    predict_depth_m,
+    requires_weights_folder,
+)
 
 
 def _parse_weight_spec(spec: str) -> tuple[str, Path]:
@@ -88,31 +92,41 @@ def _safe_text(value) -> str:
     return str(value)
 
 
-def _load_model(weights_folder: Path, device: torch.device):
-    encoder = ResnetEncoder(18, False)
-    depth_decoder = DepthDecoder(encoder.num_ch_enc, scales=range(4))
-
-    encoder.load_state_dict(
-        torch.load(weights_folder / "encoder.pth", map_location="cpu"),
-        strict=False,
+def _load_model(
+    weights_folder: Path,
+    device: torch.device,
+    *,
+    depth_backend: str = "af_sfm",
+    depth_anything_repo: str = None,
+    min_depth: float = 0.001,
+    max_depth: float = 0.1,
+):
+    return load_depth_model(
+        depth_backend=depth_backend,
+        weights_folder=weights_folder,
+        device=device,
+        min_depth=min_depth,
+        max_depth=max_depth,
+        depth_anything_repo=depth_anything_repo,
     )
-    depth_decoder.load_state_dict(
-        torch.load(weights_folder / "depth.pth", map_location="cpu")
+
+
+def _predict_depth(
+    model,
+    color: torch.Tensor,
+    min_depth: float,
+    max_depth: float,
+    *,
+    depth_backend: str = "af_sfm",
+):
+    depth = predict_depth_m(
+        model,
+        color,
+        min_depth=min_depth,
+        max_depth=max_depth,
+        depth_backend=depth_backend,
     )
-    encoder.eval().to(device)
-    depth_decoder.eval().to(device)
-    return encoder, depth_decoder
-
-
-def _predict_depth(model, color: torch.Tensor, min_depth: float, max_depth: float):
-    encoder, depth_decoder = model
-    features = encoder(color)
-    outputs = depth_decoder(features)
-    disp = outputs[("disp", 0)]
-    min_disp = 1.0 / max_depth
-    max_disp = 1.0 / min_depth
-    scaled_disp = min_disp + (max_disp - min_disp) * disp
-    return (1.0 / scaled_disp).squeeze(0).squeeze(0).cpu().numpy()
+    return depth.squeeze(0).squeeze(0).cpu().numpy()
 
 
 def _rgb_tensor_to_bgr(tensor: torch.Tensor) -> np.ndarray:
@@ -182,8 +196,29 @@ def run(args) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
-    weight_specs = [_parse_weight_spec(spec) for spec in args.weights]
-    models = [(label, _load_model(path, device), path) for label, path in weight_specs]
+    weight_specs = [_parse_weight_spec(spec) for spec in (args.weights or [])]
+    # Each entry: (label, model, path, backend)
+    models: list[tuple[str, object, object, str]] = [
+        (label, _load_model(path, device), path, "af_sfm")
+        for label, path in weight_specs
+    ]
+    if args.depth_backend == "depth_anything":
+        dav2_model = _load_model(
+            None,
+            device,
+            depth_backend="depth_anything",
+            depth_anything_repo=args.depth_anything_repo,
+            min_depth=args.min_depth,
+            max_depth=args.max_depth,
+        )
+        models.append(
+            (args.depth_anything_label, dav2_model, args.depth_anything_repo, "depth_anything")
+        )
+
+    if not models:
+        raise ValueError(
+            "Provide at least one --weights spec (af_sfm) or --depth_backend depth_anything."
+        )
 
     dataset = build_hf_triplet_dataset(
         repo_id=args.hf_repo_id,
@@ -212,9 +247,18 @@ def run(args) -> None:
             frame_idx = _safe_text(sample.get("frame_idx", ""))
 
             depths: list[tuple[str, np.ndarray]] = []
-            for label, model, _path in models:
+            for label, model, _path, backend in models:
                 depths.append(
-                    (label, _predict_depth(model, color, args.min_depth, args.max_depth))
+                    (
+                        label,
+                        _predict_depth(
+                            model,
+                            color,
+                            args.min_depth,
+                            args.max_depth,
+                            depth_backend=backend,
+                        ),
+                    )
                 )
 
             stem = f"{panel_rank:03d}_idx{sample_idx}_{seq}_{frame_idx}".replace("/", "_")
@@ -301,8 +345,25 @@ def main() -> None:
     parser.add_argument(
         "--weights",
         action="append",
-        required=True,
-        help="Checkpoint spec in label=/path/to/weights format. Repeat for each model.",
+        default=None,
+        help="Checkpoint spec in label=/path/to/weights format. Repeat for each model. "
+        "Optional when --depth_backend depth_anything is used.",
+    )
+    parser.add_argument(
+        "--depth_backend",
+        choices=["af_sfm", "depth_anything"],
+        default="af_sfm",
+        help="Add a DA-v2 tile alongside (or instead of) --weights checkpoints.",
+    )
+    parser.add_argument(
+        "--depth_anything_repo",
+        default=None,
+        help="HF repo id for DA-v2 when --depth_backend depth_anything.",
+    )
+    parser.add_argument(
+        "--depth_anything_label",
+        default="da_v2",
+        help="Panel label for the DA-v2 depth tile.",
     )
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--indices", default=None, help="Comma list or ranges like 0:16000:1000")
@@ -320,6 +381,10 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--cpu", action="store_true")
     args = parser.parse_args()
+    if args.depth_backend == "depth_anything" and not args.depth_anything_repo:
+        parser.error("--depth_anything_repo is required when --depth_backend depth_anything")
+    if not args.weights and args.depth_backend != "depth_anything":
+        parser.error("at least one --weights spec is required when --depth_backend af_sfm")
     run(args)
 
 

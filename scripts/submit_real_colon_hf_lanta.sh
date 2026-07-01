@@ -71,8 +71,20 @@ case "$ADAPTATION_PRESET" in
     teacher_source_replay)
         ADAPTATION_TRAINABLE_MODULES="encoder depth pose_encoder pose transform_encoder transform"
         ;;
+    depth_anything_frozen)
+        ADAPTATION_TRAINABLE_MODULES="pose_encoder pose transform_encoder transform (DA-v2 frozen)"
+        export DEPTH_BACKEND=depth_anything
+        export DEPTH_ANYTHING_REPO="${DEPTH_ANYTHING_REPO:-depth-anything/Depth-Anything-V2-Metric-Hypersim-Large}"
+        export DEPTH_ANYTHING_FROZEN=1
+        ;;
+    depth_anything_trainable)
+        ADAPTATION_TRAINABLE_MODULES="encoder depth pose_encoder pose transform_encoder transform (DA-v2 trainable)"
+        export DEPTH_BACKEND=depth_anything
+        export DEPTH_ANYTHING_REPO="${DEPTH_ANYTHING_REPO:-depth-anything/Depth-Anything-V2-Metric-Hypersim-Large}"
+        export DEPTH_ANYTHING_FROZEN=0
+        ;;
     *)
-        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform, teacher_pose_transform, teacher_source_replay"
+        echo "ERROR: ADAPTATION_PRESET must be one of: full, pose_transform, teacher_pose_transform, teacher_source_replay, depth_anything_frozen, depth_anything_trainable"
         exit 1
         ;;
 esac
@@ -91,6 +103,10 @@ case "$START_RUN" in
             DEFAULT_MODEL_NAME="realcolon_run_d_teacher_pose"
         elif [ "$ADAPTATION_PRESET" = "teacher_source_replay" ]; then
             DEFAULT_MODEL_NAME="realcolon_run_d_teacher_source_replay"
+        elif [ "$ADAPTATION_PRESET" = "depth_anything_frozen" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_d_da_v2_frozen"
+        elif [ "$ADAPTATION_PRESET" = "depth_anything_trainable" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_d_da_v2_trainable"
         else
             DEFAULT_MODEL_NAME="realcolon_run_d_diag"
         fi
@@ -104,6 +120,10 @@ case "$START_RUN" in
             DEFAULT_MODEL_NAME="realcolon_run_b_teacher_pose"
         elif [ "$ADAPTATION_PRESET" = "teacher_source_replay" ]; then
             DEFAULT_MODEL_NAME="realcolon_run_b_teacher_source_replay"
+        elif [ "$ADAPTATION_PRESET" = "depth_anything_frozen" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_b_da_v2_frozen"
+        elif [ "$ADAPTATION_PRESET" = "depth_anything_trainable" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_b_da_v2_trainable"
         else
             DEFAULT_MODEL_NAME="realcolon_run_b_diag"
         fi
@@ -117,6 +137,10 @@ case "$START_RUN" in
             DEFAULT_MODEL_NAME="realcolon_run_a_teacher_pose"
         elif [ "$ADAPTATION_PRESET" = "teacher_source_replay" ]; then
             DEFAULT_MODEL_NAME="realcolon_run_a_teacher_source_replay"
+        elif [ "$ADAPTATION_PRESET" = "depth_anything_frozen" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_a_da_v2_frozen"
+        elif [ "$ADAPTATION_PRESET" = "depth_anything_trainable" ]; then
+            DEFAULT_MODEL_NAME="realcolon_run_a_da_v2_trainable"
         else
             DEFAULT_MODEL_NAME="realcolon_run_a_diag"
         fi

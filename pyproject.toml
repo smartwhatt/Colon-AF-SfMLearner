@@ -21,9 +21,16 @@ dependencies = [
     "torch>=2.10.0",
     "torchvision>=0.25.0",
     "tqdm>=4.67.3",
+    "transformers>=4.45.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
 ]
+
+[tool.pytest.ini_options]
+# Scope collection to the maintained suite under tests/. The top-level
+# test_simple.py imports matplotlib/torchvision and is not part of the
+# maintained suite; excluding it keeps `uv run pytest` collectable.
+testpaths = ["tests"]

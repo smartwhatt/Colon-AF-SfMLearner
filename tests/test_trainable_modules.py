@@ -135,3 +135,41 @@ def test_invalid_trainable_module_name_raises_clear_error():
 
     with pytest.raises(ValueError, match="Unknown trainable_modules: bogus"):
         StageTwoTrainer._apply_trainable_module_allowlist(trainer)
+
+
+def test_frozen_depth_anything_pair_stays_frozen_through_allowlist_and_set_train():
+    """DA-v2 frozen under the depth_anything_frozen preset (pose+transform allowlist).
+
+    The allowlist already freezes encoder/depth (they're not in the allowlist);
+    ``_freeze_depth_anything`` is the belt-and-suspenders re-assertion that
+    must keep them frozen even after ``set_train`` toggles.
+    """
+    from networks.depth_anything_adapter import build_depth_anything_pair
+
+    trainer = object.__new__(StageTwoTrainer)
+    trainer.device = torch.device("cpu")
+    encoder, depth = build_depth_anything_pair(
+        model=torch.nn.Conv2d(3, 1, 1),
+        min_depth=0.001,
+        max_depth=0.1,
+        frozen=True,
+    )
+    trainer.models = {name: torch.nn.Linear(2, 2) for name in MODEL_NAMES}
+    trainer.models["encoder"] = encoder
+    trainer.models["depth"] = depth
+    trainer.parameters_to_train = []
+    trainer.opt = SimpleNamespace(
+        trainable_modules=list(POSE_TRANSFORM_MODULES),
+        depth_backend="depth_anything",
+        depth_anything_frozen=True,
+    )
+
+    StageTwoTrainer._apply_trainable_module_allowlist(trainer)
+    StageTwoTrainer._freeze_depth_anything(trainer)
+    StageTwoTrainer.set_train(trainer)
+
+    for name in ("encoder", "depth"):
+        assert _none_require_grad(trainer.models[name])
+        assert not trainer.models[name].dav2.training
+    for name in POSE_TRANSFORM_MODULES:
+        assert trainer.models[name].training
