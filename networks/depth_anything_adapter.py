@@ -309,15 +309,28 @@ class DepthAnythingAdapter(nn.Module):
         return features_or_color
 
     def _run_model(self, color):
-        """Run the DA-v2 model and return its raw output at input resolution.
+        """Run the DA-v2 model and return depth at the input resolution.
 
-        Returns a ``(B, 1, H, W)`` tensor whose interpretation depends on
-        ``variant``:
+        Returns a ``(B, 1, H, W)`` depth tensor clamped to
+        ``[min_depth, max_depth]``.
 
-        - ``metric_hypersim``: metric depth in metres (unbounded positive).
-        - ``relative_hf``: sigmoid disparity in ``(0, 1)`` (higher = closer),
-          i.e. *already* in the disp space the SSL pipeline consumes. This
-          is NOT metric depth and must not be passed through ``depth_to_disp``.
+        Both variants output *depth* (not disparity), differing only in scale:
+
+        - ``metric_hypersim``: metric depth in metres (official .pth; the
+          Hypersim checkpoint is metrically calibrated).
+        - ``relative_hf``: relative depth — the transformers ``-hf`` head
+          applies ``ReLU × max_depth`` (NOT sigmoid; see
+          ``transformers.models.depth_anything.modeling_depth_anything``).
+          The output is unbounded positive relative depth (larger = closer),
+          with no metric calibration. Callers relying on metric scale must
+          apply ``--median_scaling`` at eval time.
+
+        Both paths clamp to ``[min_depth, max_depth]`` and invert to disp
+        via ``depth_to_disp`` in :meth:`forward`, so the SSL loss/eval stack
+        is unchanged. The relative variant's clamp compresses its unbounded
+        output into the configured range; this is acceptable because the
+        disp<->depth invert preserves relative ordering within the range,
+        and median scaling recovers global scale at eval.
         """
         original_h, original_w = color.shape[-2], color.shape[-1]
         normalized = self._normalize(color)
@@ -331,40 +344,34 @@ class DepthAnythingAdapter(nn.Module):
                 depth = depth.unsqueeze(1)
             if depth.shape[-2:] != (orig_h, orig_w):
                 depth = depth[..., :orig_h, :orig_w]
-            # Metric depth: clamp to the configured range so the
-            # disp<->depth invert is well-conditioned.
-            depth = depth.clamp(min=self.min_depth, max=self.max_depth)
-            return depth
         else:  # relative_hf
             out = self.dav2(color)
-            disp = out.predicted_depth  # (B, H, W) sigmoid disparity in (0,1)
-            if disp.dim() == 3:
-                disp = disp.unsqueeze(1)
-            if disp.shape[-2:] != (original_h, original_w):
-                disp = F.interpolate(
-                    disp,
+            depth = out.predicted_depth  # (B, H, W) ReLU*max_depth, unbounded
+            if depth.dim() == 3:
+                depth = depth.unsqueeze(1)
+            if depth.shape[-2:] != (original_h, original_w):
+                depth = F.interpolate(
+                    depth,
                     size=(original_h, original_w),
                     mode="bilinear",
                     align_corners=False,
                 )
-            # Already sigmoid disparity; clamp only to guard float drift.
-            return disp.clamp(0.0, 1.0)
+
+        # Clamp to the configured range so the disp<->depth invert is
+        # well-conditioned. For relative_hf this compresses the unbounded
+        # output; relative ordering within the range is preserved.
+        depth = depth.clamp(min=self.min_depth, max=self.max_depth)
+        return depth
 
     def forward_depth(self, color):
-        """Return depth ``(B, 1, H, W)`` (eval shortcut).
+        """Return depth ``(B, 1, H, W)`` clamped to ``[min_depth, max_depth]``.
 
         For ``metric_hypersim`` this is metric depth in metres.
-        For ``relative_hf`` this converts the model's sigmoid disparity to
-        depth via ``disp_to_depth`` — the result is relative-scaled (no
-        metric units); eval callers must apply ``--median_scaling``.
+        For ``relative_hf`` this is relative depth (ReLU*max_depth, clamped)
+        — no metric calibration; eval callers must apply ``--median_scaling``
+        for metric comparison.
         """
-        out = self._run_model(color)
-        if self.variant == VARIANT_METRIC_HYPERSIM:
-            return out
-        # relative_hf: out is disp -> convert to depth for eval consumers.
-        from layers import disp_to_depth
-        _, depth = disp_to_depth(out, self.min_depth, self.max_depth)
-        return depth
+        return self._run_model(color)
 
     def forward(self, features_or_color):
         """Return ``{("disp", s): ...}`` mirroring ``DepthDecoder``.
@@ -373,21 +380,15 @@ class DepthAnythingAdapter(nn.Module):
         higher scales (by ``2**s``), matching how ``generate_images_pred``
         interpolates each scale's disp up to full resolution anyway.
 
-        For ``metric_hypersim`` the model outputs metric depth, inverted to
-        disp via ``depth_to_disp`` (exact inverse of ``disp_to_depth``).
-        For ``relative_hf`` the model already outputs sigmoid disparity, used
-        directly — no invert, which preserves the relative shape faithfully.
+        Both variants output depth (metric or relative), inverted to disp via
+        ``depth_to_disp`` (the exact inverse of ``disp_to_depth``). The
+        round-trip is identity when frozen; gradients flow when trainable.
         """
         color = self._coerce_color(features_or_color)
-        out = self._run_model(color)
-
-        if self.variant == VARIANT_METRIC_HYPERSIM:
-            # out is metric depth -> invert to disp.
-            disp_full = depth_to_disp(out, self.min_depth, self.max_depth)
-            disp_full = disp_full.clamp(0.0, 1.0)
-        else:  # relative_hf
-            # out is already sigmoid disparity in (0, 1).
-            disp_full = out
+        depth = self._run_model(color)
+        disp_full = depth_to_disp(depth, self.min_depth, self.max_depth)
+        # Clamp guards tiny float drift outside [0, 1] from the invert.
+        disp_full = disp_full.clamp(0.0, 1.0)
 
         outputs = {}
         for s in self.scales:

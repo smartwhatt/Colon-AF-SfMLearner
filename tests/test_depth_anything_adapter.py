@@ -61,7 +61,10 @@ class _StubRelativeHFDAv2(nn.Module):
     """Stub for the transformers ``-hf`` relative-depth forward contract.
 
     ``forward(color)`` returns a wrapper with ``.predicted_depth``, matching
-    ``AutoModelForDepthEstimation`` output.
+    ``AutoModelForDepthEstimation`` output. The value represents relative
+    DEPTH (ReLU*max_depth, unbounded positive — larger = closer), NOT
+    sigmoid disparity; the adapter clamps it to [min_depth, max_depth] and
+    inverts to disp via depth_to_disp (same path as metric).
     """
 
     def __init__(self, value=0.05):
@@ -197,33 +200,40 @@ def test_metric_variant_forward_returns_disp_and_round_trips():
     assert torch.allclose(depth, torch.full_like(depth, value), atol=1e-5)
 
 
-def test_relative_hf_variant_forward_uses_model_output_directly_as_disp():
-    """relative_hf: the model outputs sigmoid disparity, used directly as disp.
+def test_relative_hf_variant_forward_inverts_depth_to_disp_like_metric():
+    """relative_hf: model outputs relative DEPTH (ReLU*max_depth), not disp.
 
-    Unlike metric_hypersim (which inverts metric depth -> disp), the relative
-    -hf model's ``predicted_depth`` is ALREADY a sigmoid disparity in (0,1).
-    The adapter must pass it through unchanged — clamping/inverting it as
-    though it were metric depth would destroy the relative shape.
+    The transformers -hf head applies ReLU*max_depth (unbounded positive),
+    NOT sigmoid. So the adapter treats it as depth and inverts to disp via
+    depth_to_disp — the same path as metric_hypersim. The round-trip
+    disp->depth recovers the clamped depth value.
     """
-    value = 0.3  # a plausible sigmoid-disparity value
+    value = 0.05  # depth in metres, within [min_depth, max_depth]
     adapter = _make_adapter(variant="relative_hf", value=value)
     out = adapter(_color())
     disp = out[("disp", 0)]
-    # disp should equal the model's raw output, not a depth->disp invert.
-    assert torch.allclose(disp, torch.full_like(disp, value), atol=1e-6)
+    _, depth = disp_to_depth(disp, MIN_DEPTH, MAX_DEPTH)
+    assert torch.allclose(depth, torch.full_like(depth, value), atol=1e-5)
 
 
-def test_relative_hf_forward_depth_converts_disp_to_depth():
-    """relative_hf: forward_depth converts the sigmoid disp to (relative) depth."""
-    value = 0.3
+def test_relative_hf_forward_depth_returns_clamped_depth():
+    """relative_hf: forward_depth returns the clamped relative depth directly."""
+    value = 0.05
     adapter = _make_adapter(variant="relative_hf", value=value)
     depth = adapter.forward_depth(_color())
-    # depth = disp_to_depth(value); verify it matches the SSL pipeline's conversion.
-    from layers import disp_to_depth
-    expected = disp_to_depth(
-        torch.full((1, 1, 1, 1), value), MIN_DEPTH, MAX_DEPTH
-    )[1]
-    assert torch.allclose(depth, expected.expand_as(depth), atol=1e-6)
+    # forward_depth returns the clamped depth (= value, since in range).
+    assert torch.allclose(depth, torch.full_like(depth, value), atol=1e-6)
+    assert depth.shape == (2, 1, 64, 64)
+    assert torch.all(depth >= MIN_DEPTH)
+    assert torch.all(depth <= MAX_DEPTH)
+
+
+def test_relative_hf_unbounded_output_is_clamped_to_range():
+    """relative_hf: unbounded ReLU output is clamped to [min_depth, max_depth]."""
+    # value=5.0m exceeds max_depth=0.1m -> should clamp to 0.1.
+    adapter = _make_adapter(variant="relative_hf", value=5.0)
+    depth = adapter.forward_depth(_color())
+    assert torch.allclose(depth, torch.full_like(depth, MAX_DEPTH), atol=1e-6)
     assert depth.shape == (2, 1, 64, 64)
 
 
