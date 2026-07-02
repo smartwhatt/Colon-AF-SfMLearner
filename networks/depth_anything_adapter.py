@@ -311,26 +311,21 @@ class DepthAnythingAdapter(nn.Module):
     def _run_model(self, color):
         """Run the DA-v2 model and return depth at the input resolution.
 
-        Returns a ``(B, 1, H, W)`` depth tensor clamped to
-        ``[min_depth, max_depth]``.
+        Returns a ``(B, 1, H, W)`` depth tensor in ``[min_depth, max_depth]``.
 
         Both variants output *depth* (not disparity), differing only in scale:
 
         - ``metric_hypersim``: metric depth in metres (official .pth; the
-          Hypersim checkpoint is metrically calibrated).
+          Hypersim checkpoint is metrically calibrated). Clamped to the
+          configured range.
         - ``relative_hf``: relative depth — the transformers ``-hf`` head
           applies ``ReLU × max_depth`` (NOT sigmoid; see
           ``transformers.models.depth_anything.modeling_depth_anything``).
           The output is unbounded positive relative depth (larger = closer),
-          with no metric calibration. Callers relying on metric scale must
-          apply ``--median_scaling`` at eval time.
-
-        Both paths clamp to ``[min_depth, max_depth]`` and invert to disp
-        via ``depth_to_disp`` in :meth:`forward`, so the SSL loss/eval stack
-        is unchanged. The relative variant's clamp compresses its unbounded
-        output into the configured range; this is acceptable because the
-        disp<->depth invert preserves relative ordering within the range,
-        and median scaling recovers global scale at eval.
+          with no metric calibration. Per-image min-max normalization maps
+          it into ``[min_depth, max_depth]`` to preserve the full relative
+          shape (clamping would saturate it). Callers relying on metric
+          scale must apply ``--median_scaling`` at eval time.
         """
         original_h, original_w = color.shape[-2], color.shape[-1]
         normalized = self._normalize(color)
@@ -344,6 +339,9 @@ class DepthAnythingAdapter(nn.Module):
                 depth = depth.unsqueeze(1)
             if depth.shape[-2:] != (orig_h, orig_w):
                 depth = depth[..., :orig_h, :orig_w]
+            # Metric depth: clamp to the configured range so the
+            # disp<->depth invert is well-conditioned.
+            depth = depth.clamp(min=self.min_depth, max=self.max_depth)
         else:  # relative_hf
             out = self.dav2(color)
             depth = out.predicted_depth  # (B, H, W) ReLU*max_depth, unbounded
@@ -356,12 +354,30 @@ class DepthAnythingAdapter(nn.Module):
                     mode="bilinear",
                     align_corners=False,
                 )
-
-        # Clamp to the configured range so the disp<->depth invert is
-        # well-conditioned. For relative_hf this compresses the unbounded
-        # output; relative ordering within the range is preserved.
-        depth = depth.clamp(min=self.min_depth, max=self.max_depth)
+            # Per-image min-max normalize into [min_depth, max_depth].
+            # Clamping unbounded relative output to the configured range
+            # saturates it (confirmed empirically: all preds -> ceiling).
+            # Min-max preserves the full relative shape; --median_scaling
+            # at eval recovers the global scale.
+            depth = self._normalize_per_image_to_range(depth)
         return depth
+
+    def _normalize_per_image_to_range(self, depth):
+        """Min-max normalize each image's depth into [min_depth, max_depth].
+
+        Maps the relative model's unbounded output into the configured depth
+        range per-image, preserving relative ordering. A small eps avoids
+        division by zero for constant predictions.
+        """
+        eps = 1e-8
+        # depth shape: (B, 1, H, W). Reduce over H, W per batch element.
+        flat = depth.flatten(2)  # (B, 1, H*W)
+        d_min = flat.min(dim=2, keepdim=True).values  # (B, 1, 1)
+        d_max = flat.max(dim=2, keepdim=True).values  # (B, 1, 1)
+        span = (d_max - d_min).clamp(min=eps)
+        norm = (flat - d_min) / span  # (B, 1, H*W) in [0, 1]
+        norm = norm.view_as(depth)
+        return self.min_depth + norm * (self.max_depth - self.min_depth)
 
     def forward_depth(self, color):
         """Return depth ``(B, 1, H, W)`` clamped to ``[min_depth, max_depth]``.

@@ -200,41 +200,66 @@ def test_metric_variant_forward_returns_disp_and_round_trips():
     assert torch.allclose(depth, torch.full_like(depth, value), atol=1e-5)
 
 
-def test_relative_hf_variant_forward_inverts_depth_to_disp_like_metric():
-    """relative_hf: model outputs relative DEPTH (ReLU*max_depth), not disp.
+class _StubRelativeHFVarying(nn.Module):
+    """Stub for relative-hf producing spatially-varying unbounded depth.
 
-    The transformers -hf head applies ReLU*max_depth (unbounded positive),
-    NOT sigmoid. So the adapter treats it as depth and inverts to disp via
-    depth_to_disp — the same path as metric_hypersim. The round-trip
-    disp->depth recovers the clamped depth value.
+    Returns ``predicted_depth`` = a gradient from 0 to `hi` across the image,
+    mimicking ReLU*max_depth unbounded output. This lets min-max
+    normalization be tested meaningfully (a constant input is degenerate).
     """
-    value = 0.05  # depth in metres, within [min_depth, max_depth]
-    adapter = _make_adapter(variant="relative_hf", value=value)
-    out = adapter(_color())
+
+    def __init__(self, hi=5.0):
+        super().__init__()
+        self._hi = float(hi)
+
+    def forward(self, color):
+        b, _, h, w = color.shape
+        # gradient 0..hi along width, broadcast over batch/height.
+        grad = torch.linspace(0.0, self._hi, w, dtype=color.dtype).view(1, 1, 1, w)
+        depth = grad.expand(b, 1, h, w).contiguous()
+        return _StubDAv2Output(depth)
+
+
+def test_relative_hf_normalizes_unbounded_output_into_range():
+    """relative_hf: unbounded ReLU output is min-max normalized into [min, max].
+
+    Clamping saturates (confirmed on Lanta: all preds -> ceiling). Per-image
+    min-max normalization preserves the relative shape and maps into the
+    configured depth range so disp_to_depth is well-conditioned.
+    """
+    adapter = DepthAnythingAdapter(
+        variant="relative_hf",
+        model=_StubRelativeHFVarying(hi=5.0),
+        scales=(0,),
+        min_depth=MIN_DEPTH,
+        max_depth=MAX_DEPTH,
+        frozen=True,
+    )
+    depth = adapter.forward_depth(_color(h=8, w=8))
+    assert depth.shape == (2, 1, 8, 8)
+    # The min end maps to min_depth, the max end to max_depth.
+    assert torch.allclose(depth[..., 0], torch.full_like(depth[..., 0], MIN_DEPTH), atol=1e-5)
+    assert torch.allclose(depth[..., -1], torch.full_like(depth[..., -1], MAX_DEPTH), atol=1e-5)
+    assert torch.all(depth >= MIN_DEPTH - 1e-6)
+    assert torch.all(depth <= MAX_DEPTH + 1e-6)
+
+
+def test_relative_hf_forward_disp_round_trips_through_normalized_depth():
+    """relative_hf: forward -> disp -> depth recovers the normalized depth."""
+    adapter = DepthAnythingAdapter(
+        variant="relative_hf",
+        model=_StubRelativeHFVarying(hi=5.0),
+        scales=(0,),
+        min_depth=MIN_DEPTH,
+        max_depth=MAX_DEPTH,
+        frozen=True,
+    )
+    color = _color(h=8, w=8)
+    expected_depth = adapter.forward_depth(color)
+    out = adapter(color)
     disp = out[("disp", 0)]
     _, depth = disp_to_depth(disp, MIN_DEPTH, MAX_DEPTH)
-    assert torch.allclose(depth, torch.full_like(depth, value), atol=1e-5)
-
-
-def test_relative_hf_forward_depth_returns_clamped_depth():
-    """relative_hf: forward_depth returns the clamped relative depth directly."""
-    value = 0.05
-    adapter = _make_adapter(variant="relative_hf", value=value)
-    depth = adapter.forward_depth(_color())
-    # forward_depth returns the clamped depth (= value, since in range).
-    assert torch.allclose(depth, torch.full_like(depth, value), atol=1e-6)
-    assert depth.shape == (2, 1, 64, 64)
-    assert torch.all(depth >= MIN_DEPTH)
-    assert torch.all(depth <= MAX_DEPTH)
-
-
-def test_relative_hf_unbounded_output_is_clamped_to_range():
-    """relative_hf: unbounded ReLU output is clamped to [min_depth, max_depth]."""
-    # value=5.0m exceeds max_depth=0.1m -> should clamp to 0.1.
-    adapter = _make_adapter(variant="relative_hf", value=5.0)
-    depth = adapter.forward_depth(_color())
-    assert torch.allclose(depth, torch.full_like(depth, MAX_DEPTH), atol=1e-6)
-    assert depth.shape == (2, 1, 64, 64)
+    assert torch.allclose(depth, expected_depth, atol=1e-5)
 
 
 def test_invalid_variant_raises():
