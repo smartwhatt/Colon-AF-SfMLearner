@@ -31,8 +31,33 @@ export MODULE_NAME="${MODULE_NAME:-Mamba/23.11.0-0}"
 export CONDA_ENV="${CONDA_ENV:-/lustrefs/disk/project/lt200353-pcllm/swattana/conda}"
 
 export DATA_ROOT="${DATA_ROOT:-/project/lt200353-pcllm/swattana/PolypSense3D/Clinical-Dataset-For-PolypSense3D}"
-export DEPTH_ANYTHING_REPO="${DEPTH_ANYTHING_REPO:-depth-anything/Depth-Anything-V2-Metric-Hypersim-Large}"
-export RUN_ID="${RUN_ID:-dav2_polysense_sparse}"
+export DEPTH_ANYTHING_VARIANT="${DEPTH_ANYTHING_VARIANT:-metric_hypersim}"
+export DEPTH_ANYTHING_ENCODER_SIZE="${DEPTH_ANYTHING_ENCODER_SIZE:-vitl}"
+# Default repo per variant (override DEPTH_ANYTHING_REPO to compare variants).
+if [ -z "${DEPTH_ANYTHING_REPO:-}" ]; then
+    case "$DEPTH_ANYTHING_VARIANT" in
+        metric_hypersim)
+            case "$DEPTH_ANYTHING_ENCODER_SIZE" in
+                vits) DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Metric-Hypersim-Small" ;;
+                vitb) DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Metric-Hypersim-Base" ;;
+                *)    DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Metric-Hypersim-Large" ;;
+            esac
+            ;;
+        relative_hf)
+            case "$DEPTH_ANYTHING_ENCODER_SIZE" in
+                vits) DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Small-hf" ;;
+                vitb) DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Base-hf" ;;
+                *)    DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Large-hf" ;;
+            esac
+            ;;
+        *)
+            echo "ERROR: DEPTH_ANYTHING_VARIANT must be metric_hypersim or relative_hf"
+            exit 1
+            ;;
+    esac
+fi
+export DEPTH_ANYTHING_REPO
+export RUN_ID="${RUN_ID:-dav2_${DEPTH_ANYTHING_VARIANT}_polysense_sparse}"
 export OUT_DIR="${OUT_DIR:-$PROJECT_DIR/reports/polysense3d/$RUN_ID}"
 
 # Shared HF cache (mirrors submit_real_colon_hf_lanta.sh layout).
@@ -102,21 +127,33 @@ prefetch_dav2_model() {
 
     log "Prefetching DA-v2 model on submit node"
     echo "  Repo:    $DEPTH_ANYTHING_REPO"
+    echo "  Variant: $DEPTH_ANYTHING_VARIANT"
+    echo "  Size:    $DEPTH_ANYTHING_ENCODER_SIZE"
     echo "  HF_HOME: $HF_HOME"
     mkdir -p "$HF_HOME"
 
     cd "$PROJECT_DIR"
-    uv run python - "$DEPTH_ANYTHING_REPO" <<'PY'
+    uv run python - "$DEPTH_ANYTHING_REPO" "$DEPTH_ANYTHING_VARIANT" "$DEPTH_ANYTHING_ENCODER_SIZE" <<'PY'
+import os
 import sys
 
-from transformers import AutoModelForDepthEstimation
+repo_id, variant, encoder_size = sys.argv[1:4]
+print(f"Pre-caching DA-v2: {repo_id} variant={variant} size={encoder_size}", flush=True)
 
-repo_id = sys.argv[1]
-print(f"Pre-caching DA-v2 model via from_pretrained: {repo_id}", flush=True)
-# Load via the same code path the compute node uses, so the cache layout
-# (HF_HOME/hub/models--...) matches what from_pretrained expects offline.
-_ = AutoModelForDepthEstimation.from_pretrained(repo_id)
-print(f"Cached DA-v2 model for offline reuse: {repo_id}", flush=True)
+if variant == "metric_hypersim":
+    # The official metric .pth: download via hf_hub_download so it lands in
+    # HF_HOME/hub where the adapter's hf_hub_download(repo_id, filename)
+    # call finds it offline.
+    from huggingface_hub import hf_hub_download
+    fname = f"depth_anything_v2_metric_hypersim_{encoder_size}.pth"
+    path = hf_hub_download(repo_id=repo_id, filename=fname)
+    print(f"Cached metric .pth at: {path}", flush=True)
+else:  # relative_hf
+    # transformers -hf: warm via from_pretrained so the safetensors +
+    # config land where the offline from_pretrained call expects.
+    from transformers import AutoModelForDepthEstimation
+    _ = AutoModelForDepthEstimation.from_pretrained(repo_id)
+    print(f"Cached relative-hf model for offline reuse: {repo_id}", flush=True)
 PY
 
     touch "$DAV2_CACHE_READY_MARKER"
@@ -171,6 +208,8 @@ run_slurm_job() {
         --data_root "$DATA_ROOT"
         --depth_backend depth_anything
         --depth_anything_repo "$DEPTH_ANYTHING_REPO"
+        --depth_anything_variant "$DEPTH_ANYTHING_VARIANT"
+        --depth_anything_encoder_size "$DEPTH_ANYTHING_ENCODER_SIZE"
         --run_id "$RUN_ID"
         --out_dir "$OUT_DIR"
         --height "$HEIGHT"

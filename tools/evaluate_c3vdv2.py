@@ -484,6 +484,8 @@ def evaluate(args):
     # predate the depth_backend option still default to af_sfm.
     depth_backend = getattr(args, "depth_backend", "af_sfm") or "af_sfm"
     depth_anything_repo = getattr(args, "depth_anything_repo", None)
+    depth_anything_variant = getattr(args, "depth_anything_variant", "metric_hypersim")
+    depth_anything_encoder_size = getattr(args, "depth_anything_encoder_size", "vitl")
 
     if getattr(args, "load_specular_weights", False) and depth_backend == "depth_anything":
         raise ValueError(
@@ -499,6 +501,8 @@ def evaluate(args):
         min_depth=C3VD_MIN_DEPTH,
         max_depth=C3VD_MAX_DEPTH,
         depth_anything_repo=depth_anything_repo,
+        depth_anything_variant=depth_anything_variant,
+        depth_anything_encoder_size=depth_anything_encoder_size,
     )
     # AF-SfM backend returns an (encoder, depth_decoder) tuple; DA-v2 returns
     # a single adapter. Unify so the specular + prediction paths below read
@@ -762,6 +766,20 @@ if __name__ == "__main__":
         "--depth_anything_repo",
         default=None,
         help="HF repo id for DA-v2 when depth_backend=depth_anything.",
+    )
+    parser.add_argument(
+        "--depth_anything_variant",
+        choices=["metric_hypersim", "relative_hf"],
+        default="metric_hypersim",
+        help="DA-v2 variant: metric_hypersim (official .pth, metric metres) "
+        "or relative_hf (transformers -hf, relative depth; use --median_scaling).",
+    )
+    parser.add_argument(
+        "--depth_anything_encoder_size",
+        choices=["vits", "vitb", "vitl"],
+        default="vitl",
+        help="DINOv2 backbone size for metric_hypersim (Small/Base/Large). "
+        "Ignored for relative_hf.",
     )
     parser.add_argument(
         "--seg_root",

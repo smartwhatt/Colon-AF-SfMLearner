@@ -41,6 +41,8 @@ WeightsInitType = Literal["pretrained", "scratch"]
 PoseInputType   = Literal["pairs", "all"]
 PoseModelType   = Literal["posecnn", "separate_resnet", "shared"]
 DepthBackendType = Literal["af_sfm", "depth_anything"]
+DepthAnythingVariantType = Literal["metric_hypersim", "relative_hf"]
+DepthAnythingEncoderType = Literal["vits", "vitb", "vitl"]
 EvalSplitType   = Literal["eigen", "eigen_benchmark", "benchmark",
                            "odom_9", "odom_10", "endovis"]
 TrainModeType   = Literal["stage1", "stage2", "end_to_end",
@@ -196,6 +198,21 @@ class TrainingConfig(BaseModel):
         description=(
             "freeze DA-v2 weights during SSL training "
             "(recommended for the known-good-depth experiment)"
+        ),
+    )
+    depth_anything_variant: DepthAnythingVariantType = Field(
+        default="metric_hypersim",
+        description=(
+            "DA-v2 checkpoint variant: metric_hypersim (official .pth, "
+            "metric depth in metres — direct mm comparison) or relative_hf "
+            "(transformers -hf, relative depth — use median scaling at eval)"
+        ),
+    )
+    depth_anything_encoder_size: DepthAnythingEncoderType = Field(
+        default="vitl",
+        description=(
+            "DINOv2 backbone size for metric_hypersim: vits/vitb/vitl "
+            "(Small/Base/Large). Ignored for relative_hf."
         ),
     )
     teacher_weights_folder: Optional[str] = Field(

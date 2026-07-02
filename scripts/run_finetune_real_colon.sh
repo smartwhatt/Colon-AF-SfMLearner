@@ -135,6 +135,8 @@ SOURCE_REPLAY_BEST_METRIC="${SOURCE_REPLAY_BEST_METRIC:-rmse_mm}"
 # Depth Anything V2 backend (opt-in via the depth_anything_* presets).
 DEPTH_BACKEND="${DEPTH_BACKEND:-af_sfm}"
 DEPTH_ANYTHING_REPO="${DEPTH_ANYTHING_REPO:-}"
+DEPTH_ANYTHING_VARIANT="${DEPTH_ANYTHING_VARIANT:-metric_hypersim}"
+DEPTH_ANYTHING_ENCODER_SIZE="${DEPTH_ANYTHING_ENCODER_SIZE:-vitl}"
 DEPTH_ANYTHING_FROZEN="${DEPTH_ANYTHING_FROZEN:-1}"
 
 log() { echo -e "\n\033[1;36m>>> $*\033[0m\n"; }
@@ -330,6 +332,8 @@ run_stage2_adaptation() {
         cmd+=(
             --depth_backend depth_anything
             --depth_anything_repo "$DEPTH_ANYTHING_REPO"
+            --depth_anything_variant "$DEPTH_ANYTHING_VARIANT"
+            --depth_anything_encoder_size "$DEPTH_ANYTHING_ENCODER_SIZE"
         )
         if [ "$DEPTH_ANYTHING_FROZEN" = "1" ]; then
             cmd+=(--depth_anything_frozen)

@@ -37,6 +37,33 @@ fi
 export LOG_DIR="${LOG_DIR:-$PROJECT_DIR/logs/real_colon_hf}"
 export GPU="${GPU:-0}"
 export ADAPTATION_PRESET="${ADAPTATION_PRESET:-pose_transform}"
+export DEPTH_BACKEND="${DEPTH_BACKEND:-af_sfm}"
+export DEPTH_ANYTHING_VARIANT="${DEPTH_ANYTHING_VARIANT:-metric_hypersim}"
+export DEPTH_ANYTHING_ENCODER_SIZE="${DEPTH_ANYTHING_ENCODER_SIZE:-vitl}"
+
+# Resolve the default DA-v2 HF repo from variant + encoder size when not set.
+_resolve_dav2_repo() {
+    if [ -n "${DEPTH_ANYTHING_REPO:-}" ]; then
+        return
+    fi
+    case "$DEPTH_ANYTHING_VARIANT" in
+        metric_hypersim)
+            case "$DEPTH_ANYTHING_ENCODER_SIZE" in
+                vits) DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Metric-Hypersim-Small" ;;
+                vitb) DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Metric-Hypersim-Base" ;;
+                *)    DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Metric-Hypersim-Large" ;;
+            esac
+            ;;
+        relative_hf)
+            case "$DEPTH_ANYTHING_ENCODER_SIZE" in
+                vits) DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Small-hf" ;;
+                vitb) DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Base-hf" ;;
+                *)    DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Large-hf" ;;
+            esac
+            ;;
+    esac
+    export DEPTH_ANYTHING_REPO
+}
 
 case "$ADAPTATION_PRESET" in
     full)
@@ -54,13 +81,13 @@ case "$ADAPTATION_PRESET" in
     depth_anything_frozen)
         ADAPTATION_TRAINABLE_MODULES="pose_encoder pose transform_encoder transform (DA-v2 frozen)"
         export DEPTH_BACKEND=depth_anything
-        export DEPTH_ANYTHING_REPO="${DEPTH_ANYTHING_REPO:-depth-anything/Depth-Anything-V2-Metric-Hypersim-Large}"
+        _resolve_dav2_repo
         export DEPTH_ANYTHING_FROZEN=1
         ;;
     depth_anything_trainable)
         ADAPTATION_TRAINABLE_MODULES="encoder depth pose_encoder pose transform_encoder transform (DA-v2 trainable)"
         export DEPTH_BACKEND=depth_anything
-        export DEPTH_ANYTHING_REPO="${DEPTH_ANYTHING_REPO:-depth-anything/Depth-Anything-V2-Metric-Hypersim-Large}"
+        _resolve_dav2_repo
         export DEPTH_ANYTHING_FROZEN=0
         ;;
     *)

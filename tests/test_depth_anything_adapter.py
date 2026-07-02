@@ -31,17 +31,37 @@ MAX_DEPTH = 0.1
 
 
 class _StubDAv2Output:
-    """Mimics the HF DA-v2 forward output (``.predicted_depth``)."""
+    """Mimics the HF transformers DA-v2 forward output (``.predicted_depth``)."""
 
     def __init__(self, predicted_depth):
         self.predicted_depth = predicted_depth
 
 
-class _StubDAv2(nn.Module):
-    """A 1-layer conv returning a constant metric depth.
+class _StubMetricDAv2(nn.Module):
+    """Stub for the official metric DepthAnythingV2 forward contract.
 
-    The constant is chosen inside ``[min_depth, max_depth]`` so the
-    depth->disp invert is well-conditioned.
+    ``forward(color)`` returns a ``(B, 1, H, W)`` metric-depth tensor
+    directly (no wrapper object), matching the vendored
+    :class:`networks.depth_anything_v2.DepthAnythingV2`. The constant is
+    inside ``[min_depth, max_depth]`` so the depth->disp invert is
+    well-conditioned.
+    """
+
+    def __init__(self, value=0.05):
+        super().__init__()
+        self.conv = nn.Conv2d(3, 1, 1)
+        self._value = float(value)
+
+    def forward(self, color):
+        b, _, h, w = color.shape
+        return torch.full((b, 1, h, w), self._value, dtype=color.dtype)
+
+
+class _StubRelativeHFDAv2(nn.Module):
+    """Stub for the transformers ``-hf`` relative-depth forward contract.
+
+    ``forward(color)`` returns a wrapper with ``.predicted_depth``, matching
+    ``AutoModelForDepthEstimation`` output.
     """
 
     def __init__(self, value=0.05):
@@ -55,9 +75,20 @@ class _StubDAv2(nn.Module):
         return _StubDAv2Output(depth)
 
 
-def _make_adapter(frozen=True, value=0.05, scales=(0, 1, 2, 3)):
+def _make_adapter(
+    variant="metric_hypersim",
+    frozen=True,
+    value=0.05,
+    scales=(0, 1, 2, 3),
+):
+    """Build an adapter with a stub model matching the variant's contract."""
+    if variant == "metric_hypersim":
+        model = _StubMetricDAv2(value=value)
+    else:  # relative_hf
+        model = _StubRelativeHFDAv2(value=value)
     return DepthAnythingAdapter(
-        model=_StubDAv2(value=value),
+        variant=variant,
+        model=model,
         scales=scales,
         min_depth=MIN_DEPTH,
         max_depth=MAX_DEPTH,
@@ -141,10 +172,71 @@ def test_trainable_adapter_allows_grad():
 
 def test_build_pair_shares_single_dav2_instance():
     encoder, depth = build_depth_anything_pair(
-        model=_StubDAv2(), min_depth=MIN_DEPTH, max_depth=MAX_DEPTH, frozen=True
+        variant="metric_hypersim",
+        model=_StubMetricDAv2(),
+        min_depth=MIN_DEPTH,
+        max_depth=MAX_DEPTH,
+        frozen=True,
     )
     assert encoder.dav2 is depth.dav2
     assert encoder.num_ch_enc == depth.num_ch_enc
+
+
+# ---------------------------------------------------------------------------
+# variant selection
+# ---------------------------------------------------------------------------
+
+
+def test_metric_variant_forward_returns_disp_and_round_trips():
+    """metric_hypersim: forward -> disp -> depth recovers the metric value."""
+    value = 0.05
+    adapter = _make_adapter(variant="metric_hypersim", value=value)
+    out = adapter(_color())
+    disp = out[("disp", 0)]
+    _, depth = disp_to_depth(disp, MIN_DEPTH, MAX_DEPTH)
+    assert torch.allclose(depth, torch.full_like(depth, value), atol=1e-5)
+
+
+def test_relative_hf_variant_forward_returns_disp_and_round_trips():
+    """relative_hf: forward -> disp -> depth recovers the (relative) value."""
+    value = 0.03
+    adapter = _make_adapter(variant="relative_hf", value=value)
+    out = adapter(_color())
+    disp = out[("disp", 0)]
+    _, depth = disp_to_depth(disp, MIN_DEPTH, MAX_DEPTH)
+    assert torch.allclose(depth, torch.full_like(depth, value), atol=1e-5)
+
+
+def test_invalid_variant_raises():
+    with pytest.raises(ValueError, match="variant must be one of"):
+        DepthAnythingAdapter(variant="bogus", model=_StubMetricDAv2())
+
+
+def test_metric_variant_requires_repo_id_when_no_model():
+    with pytest.raises(ValueError, match="repo_id"):
+        DepthAnythingAdapter(variant="metric_hypersim", repo_id=None)
+
+
+def test_relative_hf_variant_requires_repo_id_when_no_model():
+    with pytest.raises(ValueError, match="repo_id"):
+        DepthAnythingAdapter(variant="relative_hf", repo_id=None)
+
+
+def test_metric_variant_bad_encoder_size_raises():
+    with pytest.raises(ValueError, match="encoder_size"):
+        DepthAnythingAdapter(
+            variant="metric_hypersim",
+            model=_StubMetricDAv2(),
+            encoder_size="vitxl",
+        )
+
+
+def test_metric_variant_pads_non_patch_multiple_input():
+    """metric_hypersim pads H,W to multiples of 14 then crops back."""
+    adapter = _make_adapter(variant="metric_hypersim", value=0.05)
+    # 64 is not a multiple of 14 (64/14 = 4.57 -> pads to 70).
+    depth = adapter.forward_depth(_color(h=64, w=64))
+    assert depth.shape[-2:] == (64, 64)
 
 
 # ---------------------------------------------------------------------------
@@ -262,11 +354,15 @@ def test_depth_backend_config_fields_parse():
             "--depth_backend", "depth_anything",
             "--depth_anything_repo", "depth-anything/Depth-Anything-V2-Metric-Hypersim-Large",
             "--depth_anything_frozen",
+            "--depth_anything_variant", "metric_hypersim",
+            "--depth_anything_encoder_size", "vitl",
         ]
     )
     assert cfg.depth_backend == "depth_anything"
     assert cfg.depth_anything_repo == "depth-anything/Depth-Anything-V2-Metric-Hypersim-Large"
     assert cfg.depth_anything_frozen is True
+    assert cfg.depth_anything_variant == "metric_hypersim"
+    assert cfg.depth_anything_encoder_size == "vitl"
 
 
 def test_depth_backend_defaults_preserve_af_sfm():
@@ -276,4 +372,19 @@ def test_depth_backend_defaults_preserve_af_sfm():
     assert cfg.depth_backend == "af_sfm"
     assert cfg.depth_anything_repo is None
     assert cfg.depth_anything_frozen is True
+    assert cfg.depth_anything_variant == "metric_hypersim"
+    assert cfg.depth_anything_encoder_size == "vitl"
+
+
+def test_relative_hf_variant_config_parses():
+    from options import TrainingConfig
+
+    cfg = TrainingConfig.from_args(
+        [
+            "--depth_backend", "depth_anything",
+            "--depth_anything_repo", "depth-anything/Depth-Anything-V2-Large-hf",
+            "--depth_anything_variant", "relative_hf",
+        ]
+    )
+    assert cfg.depth_anything_variant == "relative_hf"
 

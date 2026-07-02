@@ -45,6 +45,8 @@ def _load_model(
     *,
     depth_backend: str = "af_sfm",
     depth_anything_repo: str = None,
+    depth_anything_variant: str = "metric_hypersim",
+    depth_anything_encoder_size: str = "vitl",
     min_depth: float = 0.001,
     max_depth: float = 0.1,
 ):
@@ -55,6 +57,8 @@ def _load_model(
         min_depth=min_depth,
         max_depth=max_depth,
         depth_anything_repo=depth_anything_repo,
+        depth_anything_variant=depth_anything_variant,
+        depth_anything_encoder_size=depth_anything_encoder_size,
     )
 
 
@@ -463,6 +467,8 @@ def evaluate(args) -> None:
     # predate the depth_backend option still default to af_sfm.
     depth_backend = getattr(args, "depth_backend", "af_sfm") or "af_sfm"
     depth_anything_repo = getattr(args, "depth_anything_repo", None)
+    depth_anything_variant = getattr(args, "depth_anything_variant", "metric_hypersim")
+    depth_anything_encoder_size = getattr(args, "depth_anything_encoder_size", "vitl")
 
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     weights_folder = Path(args.weights_folder).expanduser() if args.weights_folder else None
@@ -483,6 +489,8 @@ def evaluate(args) -> None:
         device,
         depth_backend=depth_backend,
         depth_anything_repo=depth_anything_repo,
+        depth_anything_variant=depth_anything_variant,
+        depth_anything_encoder_size=depth_anything_encoder_size,
         min_depth=args.min_depth,
         max_depth=args.max_depth,
     )
@@ -843,6 +851,20 @@ def main() -> None:
         "--depth_anything_repo",
         default=None,
         help="HF repo id for DA-v2 when depth_backend=depth_anything.",
+    )
+    parser.add_argument(
+        "--depth_anything_variant",
+        choices=["metric_hypersim", "relative_hf"],
+        default="metric_hypersim",
+        help="DA-v2 variant: metric_hypersim (official .pth, metric metres) "
+        "or relative_hf (transformers -hf, relative depth; use --median_scaling).",
+    )
+    parser.add_argument(
+        "--depth_anything_encoder_size",
+        choices=["vits", "vitb", "vitl"],
+        default="vitl",
+        help="DINOv2 backbone size for metric_hypersim (Small/Base/Large). "
+        "Ignored for relative_hf.",
     )
     parser.add_argument("--out_dir", default="reports/polysense3d/sparse_depth")
     parser.add_argument("--run_id", default="polysense3d_sparse")

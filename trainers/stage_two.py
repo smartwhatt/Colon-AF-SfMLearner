@@ -66,7 +66,9 @@ class StageTwoTrainer(BaseTrainer):
         # Depth
         if self.opt.depth_backend == "depth_anything":
             encoder, depth = networks.build_depth_anything_pair(
-                hf_repo_id=self.opt.depth_anything_repo,
+                variant=getattr(self.opt, "depth_anything_variant", "metric_hypersim"),
+                repo_id=self.opt.depth_anything_repo,
+                encoder_size=getattr(self.opt, "depth_anything_encoder_size", "vitl"),
                 scales=tuple(self.opt.scales),
                 min_depth=self.opt.min_depth,
                 max_depth=self.opt.max_depth,

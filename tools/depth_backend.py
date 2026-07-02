@@ -31,6 +31,8 @@ def load_depth_model(
     min_depth: float = 0.001,
     max_depth: float = 0.1,
     depth_anything_repo: str = None,
+    depth_anything_variant: str = "metric_hypersim",
+    depth_anything_encoder_size: str = "vitl",
     num_layers: int = 18,
 ):
     """Build and load a depth model for evaluation.
@@ -40,7 +42,9 @@ def load_depth_model(
     - ``af_sfm``: ``(encoder, depth_decoder)`` tuple, as the eval tools
       already consume.
     - ``depth_anything``: a single :class:`networks.DepthAnythingAdapter`
-      (frozen). Its ``forward_depth(color)`` returns metric depth directly.
+      (frozen). Its ``forward_depth(color)`` returns metric depth directly
+      (for ``metric_hypersim``) or relative depth (for ``relative_hf``; use
+      ``--median_scaling`` at eval time for the latter).
     """
     if depth_backend == "depth_anything":
         from networks import DepthAnythingAdapter
@@ -50,7 +54,9 @@ def load_depth_model(
                 "depth_backend='depth_anything' requires --depth_anything_repo"
             )
         adapter = DepthAnythingAdapter(
-            hf_repo_id=depth_anything_repo,
+            variant=depth_anything_variant,
+            repo_id=depth_anything_repo,
+            encoder_size=depth_anything_encoder_size,
             scales=(0, 1, 2, 3),
             min_depth=min_depth,
             max_depth=max_depth,

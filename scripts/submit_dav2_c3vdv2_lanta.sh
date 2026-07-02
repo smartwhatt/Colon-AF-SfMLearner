@@ -36,8 +36,33 @@ export HF_REPO_ID="${HF_REPO_ID:-SmartWhatt/c3vdv2-SfM}"
 export HF_SPLIT="${HF_SPLIT:-test}"
 export HF_CACHE_DIR="${HF_CACHE_DIR:-/scratch/lt200353-pcllm/swattana/hf_cache/datasets}"
 export HF_HOME="${HF_HOME:-/scratch/lt200353-pcllm/swattana/hf_cache/home}"
-export DEPTH_ANYTHING_REPO="${DEPTH_ANYTHING_REPO:-depth-anything/Depth-Anything-V2-Metric-Hypersim-Large}"
-export RUN_ID="${RUN_ID:-dav2_c3vdv2}"
+export DEPTH_ANYTHING_VARIANT="${DEPTH_ANYTHING_VARIANT:-metric_hypersim}"
+export DEPTH_ANYTHING_ENCODER_SIZE="${DEPTH_ANYTHING_ENCODER_SIZE:-vitl}"
+# Default repo per variant (override DEPTH_ANYTHING_REPO to compare variants).
+if [ -z "${DEPTH_ANYTHING_REPO:-}" ]; then
+    case "$DEPTH_ANYTHING_VARIANT" in
+        metric_hypersim)
+            case "$DEPTH_ANYTHING_ENCODER_SIZE" in
+                vits) DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Metric-Hypersim-Small" ;;
+                vitb) DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Metric-Hypersim-Base" ;;
+                *)    DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Metric-Hypersim-Large" ;;
+            esac
+            ;;
+        relative_hf)
+            case "$DEPTH_ANYTHING_ENCODER_SIZE" in
+                vits) DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Small-hf" ;;
+                vitb) DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Base-hf" ;;
+                *)    DEPTH_ANYTHING_REPO="depth-anything/Depth-Anything-V2-Large-hf" ;;
+            esac
+            ;;
+        *)
+            echo "ERROR: DEPTH_ANYTHING_VARIANT must be metric_hypersim or relative_hf"
+            exit 1
+            ;;
+    esac
+fi
+export DEPTH_ANYTHING_REPO
+export RUN_ID="${RUN_ID:-dav2_${DEPTH_ANYTHING_VARIANT}_c3vdv2}"
 export OUT_DIR="${OUT_DIR:-$PROJECT_DIR/reports/c3vdv2/$RUN_ID}"
 
 # Ready markers (mirrors submit_real_colon_hf_lanta.sh).
@@ -97,21 +122,27 @@ prefetch_dav2_model() {
 
     log "Prefetching DA-v2 model on submit node"
     echo "  Repo:    $DEPTH_ANYTHING_REPO"
+    echo "  Variant: $DEPTH_ANYTHING_VARIANT"
+    echo "  Size:    $DEPTH_ANYTHING_ENCODER_SIZE"
     echo "  HF_HOME: $HF_HOME"
     mkdir -p "$HF_HOME"
 
     cd "$PROJECT_DIR"
-    uv run python - "$DEPTH_ANYTHING_REPO" <<'PY'
+    uv run python - "$DEPTH_ANYTHING_REPO" "$DEPTH_ANYTHING_VARIANT" "$DEPTH_ANYTHING_ENCODER_SIZE" <<'PY'
 import sys
 
-from transformers import AutoModelForDepthEstimation
+repo_id, variant, encoder_size = sys.argv[1:4]
+print(f"Pre-caching DA-v2: {repo_id} variant={variant} size={encoder_size}", flush=True)
 
-repo_id = sys.argv[1]
-print(f"Pre-caching DA-v2 model via from_pretrained: {repo_id}", flush=True)
-# Load via the same code path the compute node uses, so the cache layout
-# (HF_HOME/hub/models--...) matches what from_pretrained expects offline.
-_ = AutoModelForDepthEstimation.from_pretrained(repo_id)
-print(f"Cached DA-v2 model for offline reuse: {repo_id}", flush=True)
+if variant == "metric_hypersim":
+    from huggingface_hub import hf_hub_download
+    fname = f"depth_anything_v2_metric_hypersim_{encoder_size}.pth"
+    path = hf_hub_download(repo_id=repo_id, filename=fname)
+    print(f"Cached metric .pth at: {path}", flush=True)
+else:  # relative_hf
+    from transformers import AutoModelForDepthEstimation
+    _ = AutoModelForDepthEstimation.from_pretrained(repo_id)
+    print(f"Cached relative-hf model for offline reuse: {repo_id}", flush=True)
 PY
 
     touch "$DAV2_CACHE_READY_MARKER"
@@ -180,6 +211,8 @@ run_eval() {
         --hf_cache_dir "$HF_CACHE_DIR" \
         --depth_backend depth_anything \
         --depth_anything_repo "$DEPTH_ANYTHING_REPO" \
+        --depth_anything_variant "$DEPTH_ANYTHING_VARIANT" \
+        --depth_anything_encoder_size "$DEPTH_ANYTHING_ENCODER_SIZE" \
         --height "$HEIGHT" \
         --width "$WIDTH" \
         --run_id "${RUN_ID}$2" \
