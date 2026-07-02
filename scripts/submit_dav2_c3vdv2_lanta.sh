@@ -101,19 +101,17 @@ prefetch_dav2_model() {
     mkdir -p "$HF_HOME"
 
     cd "$PROJECT_DIR"
-    uv run python - "$DEPTH_ANYTHING_REPO" "$HF_HOME" <<'PY'
-import os
+    uv run python - "$DEPTH_ANYTHING_REPO" <<'PY'
 import sys
 
-from huggingface_hub import snapshot_download
+from transformers import AutoModelForDepthEstimation
 
-repo_id, hf_home = sys.argv[1], sys.argv[2]
-print(f"Downloading DA-v2 snapshot: {repo_id}", flush=True)
-path = snapshot_download(
-    repo_id=repo_id,
-    cache_dir=os.path.join(hf_home, "hub"),
-)
-print(f"Cached DA-v2 snapshot at: {path}", flush=True)
+repo_id = sys.argv[1]
+print(f"Pre-caching DA-v2 model via from_pretrained: {repo_id}", flush=True)
+# Load via the same code path the compute node uses, so the cache layout
+# (HF_HOME/hub/models--...) matches what from_pretrained expects offline.
+_ = AutoModelForDepthEstimation.from_pretrained(repo_id)
+print(f"Cached DA-v2 model for offline reuse: {repo_id}", flush=True)
 PY
 
     touch "$DAV2_CACHE_READY_MARKER"
