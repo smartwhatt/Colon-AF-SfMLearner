@@ -197,14 +197,34 @@ def test_metric_variant_forward_returns_disp_and_round_trips():
     assert torch.allclose(depth, torch.full_like(depth, value), atol=1e-5)
 
 
-def test_relative_hf_variant_forward_returns_disp_and_round_trips():
-    """relative_hf: forward -> disp -> depth recovers the (relative) value."""
-    value = 0.03
+def test_relative_hf_variant_forward_uses_model_output_directly_as_disp():
+    """relative_hf: the model outputs sigmoid disparity, used directly as disp.
+
+    Unlike metric_hypersim (which inverts metric depth -> disp), the relative
+    -hf model's ``predicted_depth`` is ALREADY a sigmoid disparity in (0,1).
+    The adapter must pass it through unchanged — clamping/inverting it as
+    though it were metric depth would destroy the relative shape.
+    """
+    value = 0.3  # a plausible sigmoid-disparity value
     adapter = _make_adapter(variant="relative_hf", value=value)
     out = adapter(_color())
     disp = out[("disp", 0)]
-    _, depth = disp_to_depth(disp, MIN_DEPTH, MAX_DEPTH)
-    assert torch.allclose(depth, torch.full_like(depth, value), atol=1e-5)
+    # disp should equal the model's raw output, not a depth->disp invert.
+    assert torch.allclose(disp, torch.full_like(disp, value), atol=1e-6)
+
+
+def test_relative_hf_forward_depth_converts_disp_to_depth():
+    """relative_hf: forward_depth converts the sigmoid disp to (relative) depth."""
+    value = 0.3
+    adapter = _make_adapter(variant="relative_hf", value=value)
+    depth = adapter.forward_depth(_color())
+    # depth = disp_to_depth(value); verify it matches the SSL pipeline's conversion.
+    from layers import disp_to_depth
+    expected = disp_to_depth(
+        torch.full((1, 1, 1, 1), value), MIN_DEPTH, MAX_DEPTH
+    )[1]
+    assert torch.allclose(depth, expected.expand_as(depth), atol=1e-6)
+    assert depth.shape == (2, 1, 64, 64)
 
 
 def test_invalid_variant_raises():
