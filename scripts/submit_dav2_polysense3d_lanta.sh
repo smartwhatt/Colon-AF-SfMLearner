@@ -71,6 +71,9 @@ export MIN_DEPTH="${MIN_DEPTH:-0.001}"
 export MAX_DEPTH="${MAX_DEPTH:-0.1}"
 export SAMPLE_RADIUS_PX="${SAMPLE_RADIUS_PX:-0}"
 export TOPK="${TOPK:-25}"
+# Median scaling is required for the relative_hf variant (uncalibrated scale)
+# and useful as a diagnostic for metric_hypersim. Set MEDIAN_SCALING=1 to enable.
+export MEDIAN_SCALING="${MEDIAN_SCALING:-0}"
 export DEPTH_VIS_MIN="${DEPTH_VIS_MIN:-0.001}"
 export DEPTH_VIS_MAX="${DEPTH_VIS_MAX:-0.1}"
 export CPU="${CPU:-0}"
@@ -221,6 +224,9 @@ run_slurm_job() {
         --depth_vis_min "$DEPTH_VIS_MIN"
         --depth_vis_max "$DEPTH_VIS_MAX"
     )
+    if [ "$MEDIAN_SCALING" = "1" ]; then
+        cmd+=(--median_scaling)
+    fi
     if [ "$CPU" = "1" ]; then
         cmd+=(--cpu)
     fi
