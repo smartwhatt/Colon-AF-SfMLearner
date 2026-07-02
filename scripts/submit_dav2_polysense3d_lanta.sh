@@ -66,6 +66,15 @@ setup_runtime() {
     fi
 }
 
+sync_env() {
+    # Sync the uv venv on the submit node (has internet) so the offline
+    # compute node never tries to reach PyPI for missing deps like
+    # transformers/tokenizers.
+    log "Syncing uv environment on submit node"
+    cd "$PROJECT_DIR"
+    uv sync
+}
+
 check_inputs() {
     local missing=0
     if [ ! -d "$PROJECT_DIR" ]; then
@@ -147,6 +156,7 @@ run_slurm_job() {
     # Run offline so the compute node never re-downloads the model.
     export HF_HUB_OFFLINE=1
     export TRANSFORMERS_OFFLINE=1
+    export UV_OFFLINE=1
     export HF_HOME
 
     echo "  Job ID:    ${SLURM_JOB_ID:-unknown}"
@@ -190,6 +200,7 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
     run_slurm_job
 else
     setup_runtime
+    sync_env
     prefetch_dav2_model
     submit_job
 fi

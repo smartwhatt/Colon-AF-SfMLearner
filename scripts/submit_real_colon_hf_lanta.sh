@@ -216,6 +216,15 @@ setup_runtime() {
     fi
 }
 
+sync_env() {
+    # Sync the uv venv on the submit node (has internet) so the offline
+    # compute node never tries to reach PyPI for missing deps. Required
+    # since transformers (a transitive import via networks) was added.
+    log "Syncing uv environment on submit node"
+    cd "$PROJECT_DIR"
+    uv sync
+}
+
 prefetch_hf_repo() {
     local repo_id="$1"
     local splits="$2"
@@ -397,6 +406,7 @@ run_slurm_job() {
     export HF_HUB_OFFLINE=1
     export HF_DATASETS_OFFLINE=1
     export TRANSFORMERS_OFFLINE=1
+    export UV_OFFLINE=1
     export DATA_SOURCE=hf
     export HF_STREAMING=0
     export HF_CACHE_DIR
@@ -428,6 +438,7 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
     run_slurm_job
 else
     setup_runtime
+    sync_env
     prefetch_hf_dataset
     prefetch_torchvision_weights
     prefetch_dav2_model
