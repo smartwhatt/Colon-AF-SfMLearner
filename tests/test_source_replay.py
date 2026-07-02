@@ -35,6 +35,8 @@ def test_source_replay_cli_options_parse():
             "smooth_l1_log",
             "--source_replay_val_batches",
             "3",
+            "--source_replay_best_metric",
+            "loss",
         ]
     )
 
@@ -45,6 +47,7 @@ def test_source_replay_cli_options_parse():
     assert cfg.source_replay_pose_weight == 0.25
     assert cfg.source_replay_depth_loss == "smooth_l1_log"
     assert cfg.source_replay_val_batches == 3
+    assert cfg.source_replay_best_metric == "loss"
 
 
 def test_source_replay_raw_log_depth_loss_penalizes_global_scale():
@@ -85,6 +88,37 @@ def test_source_replay_loss_combines_weighted_depth_and_pose(monkeypatch):
     assert losses["source_replay_weighted/pose"].item() == pytest.approx(3.0)
     assert losses["source_replay/loss"].item() == pytest.approx(11.0)
     assert losses["loss_weighted/source_replay"].item() == pytest.approx(33.0)
+
+
+def test_source_replay_best_candidate_uses_rmse_mm():
+    trainer = object.__new__(StageTwoTrainer)
+    trainer.opt = SimpleNamespace(source_replay_best_metric="rmse_mm")
+
+    candidate = StageTwoTrainer._source_replay_best_candidate(
+        trainer, {"rmse_mm": 3.7, "loss": 0.8}
+    )
+
+    assert candidate == ("source_replay/rmse_mm", 3.7, "min")
+
+
+def test_source_replay_best_candidate_uses_loss():
+    trainer = object.__new__(StageTwoTrainer)
+    trainer.opt = SimpleNamespace(source_replay_best_metric="loss")
+
+    candidate = StageTwoTrainer._source_replay_best_candidate(
+        trainer, {"rmse_mm": 3.7, "loss": 0.8}
+    )
+
+    assert candidate == ("source_replay/loss", 0.8, "min")
+
+
+def test_source_replay_best_candidate_skips_missing_selected_metric():
+    trainer = object.__new__(StageTwoTrainer)
+    trainer.opt = SimpleNamespace(source_replay_best_metric="rmse_mm")
+
+    candidate = StageTwoTrainer._source_replay_best_candidate(trainer, {"loss": 0.8})
+
+    assert candidate is None
 
 
 def test_source_replay_dataloader_uses_c3vdv2_hf_format(monkeypatch):

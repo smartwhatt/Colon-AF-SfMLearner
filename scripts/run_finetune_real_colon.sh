@@ -130,6 +130,7 @@ SOURCE_REPLAY_DEPTH_WEIGHT="${SOURCE_REPLAY_DEPTH_WEIGHT:-1.0}"
 SOURCE_REPLAY_POSE_WEIGHT="${SOURCE_REPLAY_POSE_WEIGHT:-0.1}"
 SOURCE_REPLAY_DEPTH_LOSS="${SOURCE_REPLAY_DEPTH_LOSS:-smooth_l1_log}"
 SOURCE_REPLAY_VAL_BATCHES="${SOURCE_REPLAY_VAL_BATCHES:-4}"
+SOURCE_REPLAY_BEST_METRIC="${SOURCE_REPLAY_BEST_METRIC:-rmse_mm}"
 
 # Depth Anything V2 backend (opt-in via the depth_anything_* presets).
 DEPTH_BACKEND="${DEPTH_BACKEND:-af_sfm}"
@@ -254,6 +255,7 @@ run_stage2_adaptation() {
         echo "  Replay:       $SOURCE_REPLAY_HF_REPO_ID"
         echo "  Replay split: train=$SOURCE_REPLAY_TRAIN_SPLIT val=$SOURCE_REPLAY_VAL_SPLIT"
         echo "  Replay loss:  weight=$SOURCE_REPLAY_WEIGHT depth=$SOURCE_REPLAY_DEPTH_WEIGHT pose=$SOURCE_REPLAY_POSE_WEIGHT type=$SOURCE_REPLAY_DEPTH_LOSS"
+        echo "  Replay best:  $SOURCE_REPLAY_BEST_METRIC"
     else
         echo "  Replay:       OFF"
     fi
@@ -309,6 +311,7 @@ run_stage2_adaptation() {
             --source_replay_pose_weight "$SOURCE_REPLAY_POSE_WEIGHT"
             --source_replay_depth_loss "$SOURCE_REPLAY_DEPTH_LOSS"
             --source_replay_val_batches "$SOURCE_REPLAY_VAL_BATCHES"
+            --source_replay_best_metric "$SOURCE_REPLAY_BEST_METRIC"
         )
         if [ -n "$SOURCE_REPLAY_BATCH_SIZE" ]; then
             cmd+=(--source_replay_batch_size "$SOURCE_REPLAY_BATCH_SIZE")

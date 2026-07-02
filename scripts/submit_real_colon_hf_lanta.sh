@@ -169,10 +169,12 @@ if [ "$ADAPTATION_PRESET" = "teacher_pose_transform" ] || [ "$ADAPTATION_PRESET"
         export SOURCE_REPLAY_HF_REPO_ID="${SOURCE_REPLAY_HF_REPO_ID:-SmartWhatt/c3vdv2-SfM}"
         export SOURCE_REPLAY_DEPTH_WEIGHT="${SOURCE_REPLAY_DEPTH_WEIGHT:-1.0}"
         export SOURCE_REPLAY_POSE_WEIGHT="${SOURCE_REPLAY_POSE_WEIGHT:-0.1}"
+        export SOURCE_REPLAY_BEST_METRIC="${SOURCE_REPLAY_BEST_METRIC:-rmse_mm}"
     else
         export TEACHER_CONSISTENCY_WEIGHT="${TEACHER_CONSISTENCY_WEIGHT:-0.5}"
     fi
 fi
+export SOURCE_REPLAY_BEST_METRIC="${SOURCE_REPLAY_BEST_METRIC:-rmse_mm}"
 export MODEL_NAME="${MODEL_NAME:-$DEFAULT_MODEL_NAME}"
 
 export EPOCHS="${EPOCHS:-1}"
@@ -358,6 +360,7 @@ submit_job() {
     echo "  Teacher wt:   ${TEACHER_CONSISTENCY_WEIGHT:-0.0}"
     echo "  Replay:       ${SOURCE_REPLAY_HF_REPO_ID:-off}"
     echo "  Replay wt:    ${SOURCE_REPLAY_WEIGHT:-0.0}"
+    echo "  Replay best:  ${SOURCE_REPLAY_BEST_METRIC:-rmse_mm}"
     echo "  Run dir:      $LOG_DIR/$MODEL_NAME"
     echo "  Cache marker: $CACHE_READY_MARKER"
     echo "  Replay mark:  ${SOURCE_REPLAY_CACHE_READY_MARKER:-off}"
@@ -415,6 +418,7 @@ run_slurm_job() {
     echo "  Teacher wt:   ${TEACHER_CONSISTENCY_WEIGHT:-0.0}"
     echo "  Replay:       ${SOURCE_REPLAY_HF_REPO_ID:-off}"
     echo "  Replay wt:    ${SOURCE_REPLAY_WEIGHT:-0.0}"
+    echo "  Replay best:  ${SOURCE_REPLAY_BEST_METRIC:-rmse_mm}"
     echo ""
 
     bash scripts/run_finetune_real_colon.sh

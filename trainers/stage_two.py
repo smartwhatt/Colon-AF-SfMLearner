@@ -55,6 +55,10 @@ class StageTwoTrainer(BaseTrainer):
         "pose",
         "specular",
     )
+    _SOURCE_REPLAY_BEST_CANDIDATES = {
+        "rmse_mm": ("source_replay/rmse_mm", "rmse_mm", "min"),
+        "loss": ("source_replay/loss", "loss", "min"),
+    }
 
     def build_models(self):
         self._validate_depth_backend()
@@ -517,13 +521,26 @@ class StageTwoTrainer(BaseTrainer):
             outputs, losses = self.process_batch_val(inputs)
             self.log("val", inputs, outputs, losses)
             summary = self._log_source_replay_val_metrics()
-            if summary is not None and "rmse_mm" in summary:
-                self._maybe_save_best_model(
-                    "source_replay/rmse_mm", summary["rmse_mm"], mode="min"
-                )
+            candidate = self._source_replay_best_candidate(summary)
+            if candidate is not None:
+                metric_name, metric_value, mode = candidate
+                self._maybe_save_best_model(metric_name, metric_value, mode=mode)
             del inputs, outputs, losses
 
         self.set_train()
+
+    def _source_replay_best_candidate(self, summary):
+        if summary is None:
+            return None
+
+        selector = getattr(self.opt, "source_replay_best_metric", "rmse_mm")
+        if selector not in self._SOURCE_REPLAY_BEST_CANDIDATES:
+            raise ValueError("Unknown source_replay_best_metric: {}".format(selector))
+
+        metric_name, summary_key, mode = self._SOURCE_REPLAY_BEST_CANDIDATES[selector]
+        if summary_key not in summary:
+            return None
+        return metric_name, summary[summary_key], mode
 
     def _next_source_replay_batch(self):
         try:

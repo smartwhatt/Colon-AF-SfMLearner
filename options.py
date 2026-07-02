@@ -48,6 +48,7 @@ TrainModeType   = Literal["stage1", "stage2", "end_to_end",
 DataSourceType  = Literal["local", "hf"]
 TeacherConsistencyMode = Literal["relative_log_median"]
 SourceReplayDepthLossType = Literal["smooth_l1_log", "scale_invariant_log"]
+SourceReplayBestMetricType = Literal["rmse_mm", "loss"]
 C3VDv2BestMetricType = Literal[
     "auto",
     "rmse_mm",
@@ -244,6 +245,13 @@ class TrainingConfig(BaseModel):
     source_replay_val_batches: int = Field(
         default=4,
         description="number of source replay val batches for checkpoint selection",
+    )
+    source_replay_best_metric: SourceReplayBestMetricType = Field(
+        default="rmse_mm",
+        description=(
+            "source replay validation metric used for weights_best selection "
+            "(rmse_mm preserves historical behavior; loss selects replay objective)"
+        ),
     )
 
     # ── C3VDv2 / fine-tuning ──────────────────────────────────────────────────
