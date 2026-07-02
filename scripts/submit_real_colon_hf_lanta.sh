@@ -39,6 +39,11 @@ export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_CACHE_DIR}"
 export TORCH_HOME="${TORCH_HOME:-$HF_HOME/torch}"
 export CACHE_READY_MARKER="${CACHE_READY_MARKER:-$HF_CACHE_DIR/.real_colon_sfm_ready}"
 export SOURCE_REPLAY_CACHE_READY_MARKER="${SOURCE_REPLAY_CACHE_READY_MARKER:-$HF_CACHE_DIR/.c3vdv2_sfm_replay_ready}"
+# DA-v2 model snapshot cache (only used by the depth_anything_* presets).
+export DEPTH_BACKEND="${DEPTH_BACKEND:-af_sfm}"
+export DEPTH_ANYTHING_REPO="${DEPTH_ANYTHING_REPO:-}"
+export DAV2_CACHE_READY_MARKER="${DAV2_CACHE_READY_MARKER:-$HF_HOME/.dav2_${DEPTH_ANYTHING_REPO//\//_}_ready}"
+export PREFETCH_DAV2="${PREFETCH_DAV2:-1}"
 
 # =============================================================================
 # TRAINING DEFAULTS
@@ -75,12 +80,14 @@ case "$ADAPTATION_PRESET" in
         ADAPTATION_TRAINABLE_MODULES="pose_encoder pose transform_encoder transform (DA-v2 frozen)"
         export DEPTH_BACKEND=depth_anything
         export DEPTH_ANYTHING_REPO="${DEPTH_ANYTHING_REPO:-depth-anything/Depth-Anything-V2-Metric-Hypersim-Large}"
+        export DAV2_CACHE_READY_MARKER="$HF_HOME/.dav2_${DEPTH_ANYTHING_REPO//\//_}_ready"
         export DEPTH_ANYTHING_FROZEN=1
         ;;
     depth_anything_trainable)
         ADAPTATION_TRAINABLE_MODULES="encoder depth pose_encoder pose transform_encoder transform (DA-v2 trainable)"
         export DEPTH_BACKEND=depth_anything
         export DEPTH_ANYTHING_REPO="${DEPTH_ANYTHING_REPO:-depth-anything/Depth-Anything-V2-Metric-Hypersim-Large}"
+        export DAV2_CACHE_READY_MARKER="$HF_HOME/.dav2_${DEPTH_ANYTHING_REPO//\//_}_ready"
         export DEPTH_ANYTHING_FROZEN=0
         ;;
     *)
@@ -299,6 +306,44 @@ print(f"Cached torchvision checkpoint: {checkpoint}", flush=True)
 PY
 }
 
+prefetch_dav2_model() {
+    # Only the depth_anything_* presets need the DA-v2 snapshot.
+    if [ "$DEPTH_BACKEND" != "depth_anything" ]; then
+        return
+    fi
+    if [ "$PREFETCH_DAV2" != "1" ]; then
+        log "Skipping DA-v2 prefetch (PREFETCH_DAV2=$PREFETCH_DAV2)"
+        return
+    fi
+    if [ -z "$DEPTH_ANYTHING_REPO" ]; then
+        echo "ERROR: DEPTH_ANYTHING_REPO is required for depth_anything presets"
+        exit 1
+    fi
+
+    log "Prefetching DA-v2 model on submit node"
+    echo "  Repo:    $DEPTH_ANYTHING_REPO"
+    echo "  HF_HOME: $HF_HOME"
+    mkdir -p "$HF_HOME"
+
+    cd "$PROJECT_DIR"
+    uv run python - "$DEPTH_ANYTHING_REPO" "$HF_HOME" <<'PY'
+import os
+import sys
+
+from huggingface_hub import snapshot_download
+
+repo_id, hf_home = sys.argv[1], sys.argv[2]
+print(f"Downloading DA-v2 snapshot: {repo_id}", flush=True)
+path = snapshot_download(
+    repo_id=repo_id,
+    cache_dir=os.path.join(hf_home, "hub"),
+)
+print(f"Cached DA-v2 snapshot at: {path}", flush=True)
+PY
+
+    touch "$DAV2_CACHE_READY_MARKER"
+}
+
 submit_job() {
     cd "$PROJECT_DIR"
     mkdir -p logs/slurm "$LOG_DIR"
@@ -334,6 +379,13 @@ run_slurm_job() {
     if [ "${SOURCE_REPLAY_WEIGHT:-0.0}" != "0" ] && [ "${SOURCE_REPLAY_WEIGHT:-0.0}" != "0.0" ]; then
         if [ ! -f "$SOURCE_REPLAY_CACHE_READY_MARKER" ]; then
             echo "ERROR: source replay HF cache marker not found: $SOURCE_REPLAY_CACHE_READY_MARKER"
+            echo "Run this script with bash on a login/submit node before using sbatch directly."
+            exit 1
+        fi
+    fi
+    if [ "$DEPTH_BACKEND" = "depth_anything" ]; then
+        if [ ! -f "$DAV2_CACHE_READY_MARKER" ]; then
+            echo "ERROR: DA-v2 cache marker not found: $DAV2_CACHE_READY_MARKER"
             echo "Run this script with bash on a login/submit node before using sbatch directly."
             exit 1
         fi
@@ -374,5 +426,6 @@ else
     setup_runtime
     prefetch_hf_dataset
     prefetch_torchvision_weights
+    prefetch_dav2_model
     submit_job
 fi

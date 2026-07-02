@@ -17,6 +17,10 @@
 #
 # DA-v2 is loaded from Hugging Face via transformers; no --weights_folder is
 # required. Override DEPTH_ANYTHING_REPO to compare DA-v2 variants.
+#
+# The login/submit node prefetches the DA-v2 model snapshot into a shared HF
+# cache; the compute node then runs offline (HF_HUB_OFFLINE=1) so the model
+# is never re-downloaded and the job works on nodes without internet.
 
 set -euo pipefail
 
@@ -30,6 +34,11 @@ export DATA_ROOT="${DATA_ROOT:-/project/lt200353-pcllm/swattana/PolypSense3D/Cli
 export DEPTH_ANYTHING_REPO="${DEPTH_ANYTHING_REPO:-depth-anything/Depth-Anything-V2-Metric-Hypersim-Large}"
 export RUN_ID="${RUN_ID:-dav2_polysense_sparse}"
 export OUT_DIR="${OUT_DIR:-$PROJECT_DIR/reports/polysense3d/$RUN_ID}"
+
+# Shared HF cache (mirrors submit_real_colon_hf_lanta.sh layout).
+export HF_HOME="${HF_HOME:-/scratch/lt200353-pcllm/swattana/hf_cache/home}"
+export DAV2_CACHE_READY_MARKER="${DAV2_CACHE_READY_MARKER:-$HF_HOME/.dav2_${DEPTH_ANYTHING_REPO//\//_}_ready}"
+export PREFETCH_DAV2="${PREFETCH_DAV2:-1}"
 
 export HEIGHT="${HEIGHT:-256}"
 export WIDTH="${WIDTH:-320}"
@@ -76,6 +85,36 @@ check_inputs() {
     fi
 }
 
+prefetch_dav2_model() {
+    if [ "$PREFETCH_DAV2" != "1" ]; then
+        log "Skipping DA-v2 prefetch (PREFETCH_DAV2=$PREFETCH_DAV2)"
+        return
+    fi
+
+    log "Prefetching DA-v2 model on submit node"
+    echo "  Repo:    $DEPTH_ANYTHING_REPO"
+    echo "  HF_HOME: $HF_HOME"
+    mkdir -p "$HF_HOME"
+
+    cd "$PROJECT_DIR"
+    uv run python - "$DEPTH_ANYTHING_REPO" "$HF_HOME" <<'PY'
+import os
+import sys
+
+from huggingface_hub import snapshot_download
+
+repo_id, hf_home = sys.argv[1], sys.argv[2]
+print(f"Downloading DA-v2 snapshot: {repo_id}", flush=True)
+path = snapshot_download(
+    repo_id=repo_id,
+    cache_dir=os.path.join(hf_home, "hub"),
+)
+print(f"Cached DA-v2 snapshot at: {path}", flush=True)
+PY
+
+    touch "$DAV2_CACHE_READY_MARKER"
+}
+
 submit_job() {
     cd "$PROJECT_DIR"
     mkdir -p logs/slurm "$OUT_DIR"
@@ -99,10 +138,23 @@ run_slurm_job() {
     check_inputs
     mkdir -p "$OUT_DIR"
 
+    if [ ! -f "$DAV2_CACHE_READY_MARKER" ]; then
+        echo "ERROR: DA-v2 cache marker not found: $DAV2_CACHE_READY_MARKER"
+        echo "Run this script with bash on a login/submit node before using sbatch directly."
+        exit 1
+    fi
+
+    # Run offline so the compute node never re-downloads the model.
+    export HF_HUB_OFFLINE=1
+    export TRANSFORMERS_OFFLINE=1
+    export HF_HOME
+
     echo "  Job ID:    ${SLURM_JOB_ID:-unknown}"
     echo "  Node:      ${SLURMD_NODENAME:-unknown}"
     echo "  Dataset:   $DATA_ROOT"
     echo "  DA-v2 repo: $DEPTH_ANYTHING_REPO"
+    echo "  HF_HOME:   $HF_HOME"
+    echo "  Offline:   HF_HUB_OFFLINE=$HF_HUB_OFFLINE TRANSFORMERS_OFFLINE=$TRANSFORMERS_OFFLINE"
     echo "  Output:    $OUT_DIR"
     echo ""
 
@@ -137,5 +189,7 @@ run_slurm_job() {
 if [ -n "${SLURM_JOB_ID:-}" ]; then
     run_slurm_job
 else
+    setup_runtime
+    prefetch_dav2_model
     submit_job
 fi
