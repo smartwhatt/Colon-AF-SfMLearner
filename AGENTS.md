@@ -15,7 +15,10 @@ Current project focus:
   shown forgetting or scale drift.
 - Use frozen `pose_transform` as a no-forgetting control only; it does not prove
   clinical-domain depth adaptation.
-- Run teacher-anchored REALColon diagnostics before replay or longer campaigns.
+- Treat source replay as the current safety baseline for trainable-depth
+  adaptation, not as proof of clinical metric depth or polyp sizing.
+- Select adaptation checkpoints with target-domain and scale-aware evidence,
+  not replay loss alone.
 - Do not claim metric polyp sizing without explicit scale-anchor evidence.
 
 ## Wiki Source Of Truth
@@ -41,14 +44,21 @@ When an experiment result matters, document it in the wiki:
 
 ## Active REALColon Workflow
 
-Next long-running diagnostic:
+The Run B `teacher_pose_transform` command is a completed frozen-depth control,
+not the default next run. Do not start another long source-selected replay
+campaign by default. The immediate workflow is:
 
-```bash
-ADAPTATION_PRESET=teacher_pose_transform START_RUN=run_b \
-EPOCHS=1 STEPS_PER_EPOCH=500 LR=1e-5 \
-MODEL_NAME=realcolon_run_b_teacher_pose_500 \
-bash scripts/submit_real_colon_hf_lanta.sh
-```
+1. Run a fixed REALColon qualitative panel comparing the clinically interesting
+   3k source-replay final `weights_5` with `weights_best` and its source
+   checkpoints.
+2. Define a target-domain selector/scale-aware clinical gate; replay loss is
+   insufficient for clinical checkpoint selection.
+3. Define the private forceps sparse-depth manifest and keep it evaluation-only
+   until its split and label protocol are reviewed.
+4. Clean the candidate clinical size benchmark before attempting a 10-mm claim.
+
+The `teacher_source_replay` preset is the current trainable-depth safety branch.
+It is still provisional until a selected checkpoint passes all gates below.
 
 Every depth-adapting REALColon checkpoint must be gated with:
 - C3VDv2 no-median depth evaluation for scale drift.
@@ -56,7 +66,8 @@ Every depth-adapting REALColon checkpoint must be gated with:
 - C3VDv2 pose evaluation.
 - Fixed REALColon qualitative panel.
 
-Do not start a full REALColon campaign until the diagnostic branch passes.
+Do not start a full REALColon campaign until a candidate passes these gates and
+the target-domain selection evidence supports it.
 
 ## Code Practices
 
@@ -82,4 +93,3 @@ git diff --check
 `uv run pytest` may fail during collection if top-level `test_simple.py` imports
 missing `matplotlib`; report that separately and rely on `uv run pytest tests`
 for the maintained suite unless the environment is updated.
-

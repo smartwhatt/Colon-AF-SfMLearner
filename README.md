@@ -23,6 +23,18 @@ and
 >
 > [ICRA 2021 (pdf)](https://ieeexplore.ieee.org/abstract/document/9561508).
 
+## Research handoff
+
+The repository is also the active workspace for colonoscopy polyp-size research.
+Start with the tracked [research handoff](handoff/2026-07-23-research-handoff/)
+before running an experiment. It explains the current claim boundaries, clinical
+and camera context, reproducible evaluation gates, and the recommended
+depth-pose-free sizing direction. The topic wiki named in `AGENTS.md` remains
+the live source of truth for new experiments.
+
+Generated checkpoints, local reports, and raw clinical data are intentionally
+ignored by Git and are not part of the handoff package.
+
 #### Overview
 
 <p align="center">

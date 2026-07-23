@@ -1,0 +1,217 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[hidelinks]{hyperref}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{placeins}
+\usepackage{url}
+
+\title{Direct and Anchor-Gated Polyp Sizing from Monocular Colonoscopy Video\\
+\large Literature Review and Research Direction}
+\author{Smart Wattanapornmongkol\thanks{\raggedright Handoff contact: student ID 6738249221; phone 0639390653; \href{https://line.me/ti/p/nqlvyY38hD}{LINE}.\\Project repository: \href{https://github.com/smartwhatt/Colon-AF-SfMLearner}{github.com/smartwhatt/Colon-AF-SfMLearner}.}}
+\date{23 July 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Polyp size is clinically consequential, but estimating it from a monocular
+colonoscopy video is not the same task as estimating relative depth. This
+review introduces the clinical and camera context needed by machine-learning
+researchers, surveys direct and reference-based size-estimation approaches,
+and identifies their shared limitations. Wide-angle optics, near-light
+illumination, non-rigid tissue, quality variation, and missing metric scale
+make single-frame pixel measurements unreliable. Existing approaches use
+learned RGB/depth features, temporal aggregation, calibrated optical priors,
+or visible references such as a waterjet or snare. The recommended research
+program is an evaluation-first, short-video direct-sizing model: track a
+lesion, filter for usable views, predict an ordinal or continuous endpoint,
+aggregate at polyp level, and emit millimetres only when a validated scale
+anchor is available. In all other cases, the model should return a calibrated
+ordinal estimate or abstain rather than imply unsupported metric precision.
+\end{abstract}
+
+\section{Scope and terminology}
+
+This is a methods review for research planning, not clinical advice. A
+\emph{polyp} is a lesion on the inner lining of the large bowel. During
+colonoscopy, an endoscopist inspects the lesion, may remove it, and records an
+estimated diameter. In research, $\leq 5$~mm, 6--9~mm, and $\geq 10$~mm are
+useful ordinal ranges; they should not be treated as a substitute for clinical
+guidelines or an automatic treatment policy.
+
+The terms \emph{metric size}, \emph{relative depth}, and \emph{ordinal size}
+must remain separate. Metric size is a physical dimension in millimetres.
+Relative depth is a geometrically consistent shape up to a global scale.
+Ordinal size predicts a clinically useful range without asserting millimetres.
+This review distinguishes methods that output a number from methods that have
+validated a transferable scale channel.
+
+\section{Clinical and camera context}
+
+\subsection{What is measured in practice}
+
+Labels called \texttt{size\_mm} are not interchangeable. A fresh-specimen
+caliper records an excised object that may have changed through handling;
+pathology records can reflect fixation or fragmentation; an endoscopist's
+visual estimate is clinically useful but not independent metric ground truth;
+and a snare or forceps ratio depends on tool opening, visibility, pose, and
+whether the tool lies at the lesion depth. Phantom geometry offers controlled
+ground truth but does not reproduce clinical tissue or workflow. Every
+evaluation manifest should record label provenance, measurement protocol,
+scope model, site, operator, and whether an in-scene reference is present.
+
+\subsection{Why a colonoscopy image is difficult}
+
+A colonoscope is a wide-angle endoscope with illumination close to the lens.
+Its imagery differs from a fixed, well-calibrated pinhole camera in several
+ways: field-of-view distortion and image processing vary by scope; brightness
+changes with distance, orientation, exposure, white balance, and tissue
+reflectance; tissue deforms under insufflation, contact, fluid, peristalsis,
+and scope pressure; and procedure video includes blur, bubbles, debris,
+instruments, treatment, and occlusion. A lesion clip is therefore a selected
+subset of an uneven, quality-variable procedure video, not simply many
+independent still images.
+
+\subsection{Metric-scale ambiguity}
+
+For a perspective camera, $x=fX/Z$. Multiplying $X$, $Y$, $Z$, and camera
+translation by the same positive constant leaves image projection unchanged.
+Monocular structure-from-motion and photometric self-supervision can recover
+relative geometry without recovering its physical scale. Median scaling can
+evaluate relative shape, but never proves millimetres. Metric output needs an
+independent scale cue---for example a known visible reference, a calibrated
+lens-and-procedure prior that is validated for the target setting, or a
+scope-specific empirical calibration.
+
+\section{Methods in the literature}
+
+Table~\ref{tab:methods} groups representative approaches by the evidence that
+links visual features to size. The table is deliberately not a leaderboard:
+cohorts, label protocols, endpoint definitions, and split units differ too
+substantially for the reported numbers to be ranked across papers.
+
+\begin{table}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\begin{tabularx}{\textwidth}{@{}p{0.28\textwidth}X@{}}
+\toprule
+\textbf{Approach and representative work} & \textbf{Endpoint, scale evidence, and planning implication} \\
+\midrule
+RGB plus self-supervised depth and temporal pooling: Itoh et al. (BseNet) \cite{itoh2018bsenet} & Binary $<10$ versus $\geq10$~mm classification; depth is an auxiliary learned cue rather than an explicit physical reference. Direct clinical endpoint and temporal aggregation are feasible, but binary accuracy does not validate metric scale or cross-scope transfer. \\
+
+Attention-gated multi-cue classifiers: Roffo et al. \cite{roffo2024hag} (preprint) & RGB, depth, and location features for binary and three-class sizing. Combining cues is plausible; evaluate at lesion level and enforce site/scope/entity-disjoint splits before drawing general conclusions. \\
+
+Reference-free direct regression: Yii et al. \cite{yii2025referencefree} & Segmentation and depth cues with direct millimetre regression, evaluated under a single-scope, snare-anchored protocol. A direct regression head is viable, but the protocol's anchor and hardware context are part of the result. \\
+
+Geometry-aware direct regression: Lawrence et al. (MPSE) \cite{lawrence2026mpse} & Per-frame RGB/mask/pseudodepth regression with polyp-level aggregation. Aggregation should be designed around a tracked lesion rather than chosen post hoc; small or imbalanced cohorts require uncertainty reporting. \\
+
+Calibrated optical prior: ENDOANGEL \cite{wang2024endoangel} & A real-time deep-learning system that incorporates a lens-parameter calibration channel. Treat calibration as a target-environment requirement and validate it prospectively across hardware and sites. \\
+
+Visible physical reference: Poseidon \cite{sudarevic2023poseidon} & The auxiliary waterjet serves as a reference object for size measurement. A deliberately visible anchor is often the clearest path from pixels to millimetres, but introduces workflow and visibility failure modes. \\
+\bottomrule
+\end{tabularx}
+\caption{Representative methods and the scale evidence they use. Preprint
+status is stated explicitly; its findings should not be treated as mature
+clinical evidence.}
+\label{tab:methods}
+\end{table}
+
+Early direct approaches demonstrate why a reconstruction-only framing is too
+narrow. BseNet predicts self-supervised relative depth, combines it with RGB,
+and pools temporal information for a binary size decision \cite{itoh2018bsenet}.
+This makes the output closer to a clinical question, but does not resolve
+metric identifiability. More recent direct models use segmentation, estimated
+depth, and learned fusion to regress a diameter or class
+\cite{yii2025referencefree,lawrence2026mpse}. Their central contribution is
+the endpoint formulation; their measurement claims still depend on the label
+and scale protocol.
+
+Reference-based work makes that protocol explicit. ENDOANGEL uses calibrated
+lens parameters in a multicentre prospective validation \cite{wang2024endoangel}.
+Poseidon uses the waterjet as a physical in-frame reference
+\cite{sudarevic2023poseidon}. These strategies carry different operational
+costs, but both expose a measurement channel that a generic unanchored video
+cannot guarantee.
+
+Temporal representation learning is also relevant. Parolari et al. study
+contrastive learning under noisy temporal self-supervision and evaluate
+downstream colonoscopy-video tasks including size prediction
+\cite{parolari2026temporal}; this is a 2026 preprint rather than clinical
+validation. Its useful lesson for a sizing project is to model a lesion track,
+not merely to average arbitrary adjacent frames.
+
+\FloatBarrier
+\section{Failure modes that should shape evaluation}
+
+The most common risk is false precision: a model returns millimetres because
+its head is trained to regress a number, while its evaluation does not prove
+that scale transfers across scopes, sites, or label sources. Other predictable
+failure modes are frame-level leakage from the same lesion into train and test;
+mixed label provenance; tool-anchor occlusion or orientation error; blurred or
+near-contact views; under-representation of large polyps; and cherry-picking
+the best frame after observing labels. A dataset split should be at least
+polyp- and procedure-disjoint, and when data permit, site-, scope-, and
+operator-aware. Report performance by clinically relevant range, label source,
+anchor visibility, scope model, and image-quality stratum.
+
+For a continuous metric endpoint, report MAE together with agreement analysis,
+calibration, confidence intervals at the lesion level, and an abstention curve.
+For an ordinal endpoint, report confusion across clinically defined ranges,
+calibration of class probabilities, and selective risk as low-confidence cases
+are deferred. A fixed qualitative panel should include specular highlights,
+blur, bubbles, instruments, partial lesions, low insufflation, and difficult
+viewing angles. Do not use median-scaled depth as evidence of metric accuracy.
+
+\section{Recommended research program}
+
+The recommended path is an \emph{anchor-gated short-video direct-sizing}
+track, run beside the project’s existing geometry guardrails rather than
+assuming the depth-pose stack is the sole solution.
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Create an evaluation manifest first.} Deduplicate at lesion
+  and procedure level; preserve label provenance; mark scope/site/operator;
+  record anchor type and visibility; and reserve leakage-checked held-out
+  lesions before selecting an architecture.
+  \item \textbf{Form lesion clips.} Detect or segment the lesion, track it
+  through a short clip, and reject frames with blur, occlusion, poor lesion
+  coverage, excessive specularity, or unreliable tool/anchor visibility.
+  \item \textbf{Use two linked outputs.} Train an ordinal head for all
+  quality-approved clips. Train a continuous size head only for examples where
+  the scale evidence is valid; predict uncertainty for both outputs.
+  \item \textbf{Aggregate at polyp level.} Combine frame predictions using a
+  pre-specified robust rule, attention, or learned temporal model. The unit of
+  selection and reporting should be the lesion, not the most favorable frame.
+  \item \textbf{Gate metric output.} Emit millimetres only when anchor
+  detection, calibration, image quality, and uncertainty all pass. Otherwise
+  output the ordinal distribution or abstain.
+  \item \textbf{Compare against useful baselines.} Include a single-frame RGB
+  ordinal model, a clip model without depth features, an optional depth-feature
+  model, and a reference-based baseline when anchors are available.
+\end{enumerate}
+
+This approach is deliberately conservative. It permits a model to be useful in
+the many views where millimetres are not defensible, while making the conditions
+for a metric claim inspectable. The project’s self-supervised depth model can
+enter as a feature or a quality signal, but it should be evaluated as an
+incremental contribution rather than assumed to solve scale.
+
+\section{Conclusion}
+
+Direct polyp sizing from video is a legitimate endpoint, but direct regression
+alone does not solve monocular scale ambiguity. The strongest next experiment
+is a leakage-controlled, polyp-level benchmark with explicit anchor and label
+provenance, followed by a short-video model that separates ordinal inference
+from anchor-supported metric output. Such a design is more clinically legible,
+more robust to missing scale evidence, and easier to falsify than a claim that
+unanchored monocular reconstruction recovers millimetres.
+
+\begingroup
+\scriptsize
+\bibliographystyle{plain}
+\bibliography{references}
+\endgroup
+\end{document}

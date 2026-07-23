@@ -13,7 +13,7 @@ This repo is currently being used for colonoscopy polyp-size research, not gener
 Current research state:
 - **Phase 1 C3VDv2 depth baseline**: Run D (`stage2_specular_pps/weights_best`) is the preferred phantom-depth baseline: SpecularNet + PPS is best on aggregate C3VDv2 HF test metrics.
 - **Active blocker**: REALColon adaptation. Target-only REALColon fine-tuning damaged relative depth or absolute scale. Frozen `pose_transform` preserves the depth prior and is a no-forgetting control, not clinical-domain depth adaptation.
-- **Next long-running task**: Run B teacher-anchored REALColon diagnostic with C3VDv2 median/no-median depth checks, C3VDv2 pose checks, and a fixed REALColon qualitative panel.
+- **Immediate next work**: Select and validate source-replay checkpoints with a fixed REALColon qualitative panel and a target-domain scale-aware gate. The 3k final `weights_5` is clinically interesting but is not selected; do not use replay loss alone for clinical selection or launch another long replay campaign by default.
 - **Phase 2 metric scale**: Patient video can estimate at most normalized near-light geometry (`beta = b/lambda`) unless an explicit metric anchor is supplied. Do not emit or claim metric polyp size without `ScaleAnchorResolver` or equivalent anchor-gating.
 - **Paper claims**: C3VDv2 depth ablations and the near-light identifiability result are claim-ready. Clinical 10 mm threshold accuracy, Polyp-Size validation, and real clinical metric sizing are blocked.
 
@@ -99,13 +99,13 @@ The old per-mode entry scripts (`train_stage_one.py`, `train_stage_two.py`, `tra
 DATA_PATH=/path/to/C3VDv2 LOG_DIR=logs/c3vdv2 bash scripts/run_finetune_c3vdv2.sh
 ```
 
-**REALColon active recovery diagnostic**:
-```bash
-ADAPTATION_PRESET=teacher_pose_transform START_RUN=run_b \
-EPOCHS=1 STEPS_PER_EPOCH=500 LR=1e-5 \
-MODEL_NAME=realcolon_run_b_teacher_pose_500 \
-bash scripts/submit_real_colon_hf_lanta.sh
-```
+**REALColon active selection workflow**:
+
+The `teacher_pose_transform` Run B command is a completed frozen-depth control,
+not the next experiment. First compare the source-replay candidates with a fixed
+REALColon panel, then define a target-domain scale-aware selector before any
+longer campaign. Use `teacher_source_replay` only as a guarded trainable-depth
+branch; it does not establish clinical metric depth by itself.
 
 Gate every depth-adapting REALColon checkpoint with:
 ```bash
@@ -218,7 +218,7 @@ Notable non-obvious defaults:
 - `--num_layers 18` — ResNet-18 encoder
 - `--pose_model_type separate_resnet` — separate encoder for pose (vs. shared)
 - `--num_scales 4` — multi-scale losses at scales 0–3
-- `--trainable_modules ...` — optional Stage 2 allowlist; used by `pose_transform` and `teacher_pose_transform`
+- `--trainable_modules ...` — optional Stage 2 allowlist; used by `pose_transform`, `teacher_pose_transform`, and `teacher_source_replay`
 - `--teacher_weights_folder`, `--teacher_consistency_weight`, `--teacher_consistency_mode relative_log_median` — opt-in REALColon recovery teacher path; defaults are off and preserve prior behavior
 
 Loss weights (all tunable): `--disparity_smoothness 1e-4`, `--position_smoothness 1e-3`, `--consistency_constraint 0.01`, `--epipolar_constraint 0.01`, `--geometry_constraint 0.01`, `--transform_constraint 0.01`, `--transform_smoothness 0.01`.

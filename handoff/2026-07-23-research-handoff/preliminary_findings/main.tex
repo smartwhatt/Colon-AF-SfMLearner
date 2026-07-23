@@ -1,0 +1,166 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[hidelinks]{hyperref}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{url}
+
+\title{Specular-Aware Monocular Depth and Clinical Adaptation Guardrails\\
+\large Preliminary Findings for Colonoscopy Polyp-Size Research}
+\author{Smart Wattanapornmongkol\thanks{\raggedright Handoff contact: student ID 6738249221; phone 0639390653; \href{https://line.me/ti/p/nqlvyY38hD}{LINE}.\\Project repository: \href{https://github.com/smartwhatt/Colon-AF-SfMLearner}{github.com/smartwhatt/Colon-AF-SfMLearner}.}}
+\date{23 July 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Reliable polyp-size estimation from colonoscopy video requires both useful
+image geometry and a defensible link from image evidence to millimetres. We
+report preliminary results from a self-supervised monocular depth project that
+uses C3VDv2 phantom data as a source-domain guardrail and REALColon clinical
+video as an adaptation target. The preferred source baseline is Run D, which
+combines SpecularNet and PPS and obtains an AbsRel of 0.1360 and an RMSE of
+3.79~mm on the full C3VDv2 HF test. In contrast, unconstrained target-only
+adaptation produced forgetting or absolute-scale drift. Freezing depth modules
+preserved source outputs, but is a no-forgetting control rather than evidence
+of clinical depth adaptation. Teacher-anchored source replay has a promising
+sparse clinical-depth signal, but it has not completed target-domain,
+qualitative, or scale-aware selection. These findings motivate an
+evaluation-first, anchor-gated direct sizing endpoint; they do not demonstrate
+metric polyp sizing or clinical 10-mm threshold accuracy.
+\end{abstract}
+
+\section{Introduction}
+
+Colonoscopy is a flexible endoscopic procedure used to inspect the large
+bowel. Polyps are mucosal lesions that may be removed or followed, and their
+estimated diameter can influence documentation, resection planning, and
+surveillance pathways. A useful assistive system must operate under wide-angle
+optics, changing working distance, specular highlights, blur, debris, bubbles,
+insufflation, tissue deformation, and variation in endoscope hardware.
+
+The central technical constraint is metric scale. Under perspective projection,
+an image coordinate is proportional to $fX/Z$; scaling scene geometry and
+camera translation together leaves the image unchanged. Monocular depth or
+multi-view reconstruction can therefore yield useful relative shape without
+showing that a measurement is correct in millimetres. Clinical systems that
+make metric claims establish a scale channel explicitly, for example through
+lens calibration \cite{wang2024endoangel} or an in-scene waterjet reference
+\cite{sudarevic2023poseidon}. This short paper reports the project state with
+that distinction preserved.
+
+\section{Methods}
+
+\subsection{Research setting}
+
+The implementation extends AF-SfMLearner, a self-supervised monocular
+endoscopy depth-and-motion framework that uses appearance flow to mitigate
+photometric mismatch \cite{shao2022afsfm}. C3VDv2 phantom data provide dense
+depth and pose guardrails. REALColon video provides clinical appearance
+diversity but not dense metric depth ground truth. Thus, C3VDv2 evaluates
+source-domain geometry and REALColon adaptation must be screened for both
+source regression and clinically meaningful scale evidence.
+
+We compare source and adaptation branches documented in the canonical project
+record \cite{projectrecord2026}. For every depth-adapting REALColon candidate,
+the required evaluation design includes C3VDv2 depth without median scaling for
+absolute scale, median-scaled C3VDv2 depth for relative shape, C3VDv2 pose, a
+fixed REALColon qualitative panel, and any available sparse clinical gate.
+These are selection requirements, not interchangeable endpoints.
+
+\subsection{Interpretation protocol}
+
+We use the following rules to avoid overinterpretation. A frozen module can
+prove that its output was preserved, but cannot establish adaptation of that
+module. Median-scaled depth measures relative structure and cannot be reported
+as metric accuracy. Sparse depth points are not lesion longest-axis labels. A
+metric polyp-size claim requires a leakage-checked clinical benchmark with
+known label provenance and a validated scale anchor or scope-specific
+calibration.
+
+\section{Results}
+
+Table~\ref{tab:findings} summarizes the claim-safe findings. Run D
+(\texttt{stage2\_specular\_pps/weights\_best}) is the preferred C3VDv2
+phantom-depth baseline. Its full HF-test metrics are AbsRel 0.1360, RMSE
+3.79~mm, and $\delta<1.25$ of 0.8318. In the tested ablation, PPS alone was
+weaker than the baseline, whereas the SpecularNet--PPS combination was
+stronger; this supports a conditional, rather than universal, benefit of PPS.
+
+\begin{table*}[t]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}p{0.24\textwidth}p{0.30\textwidth}X@{}}
+\toprule
+\textbf{Finding} & \textbf{Evidence} & \textbf{Safe interpretation} \\
+\midrule
+Run D is the preferred source baseline. & C3VDv2 HF test: AbsRel 0.1360, RMSE 3.79~mm, $\delta<1.25=0.8318$. & SpecularNet plus PPS is the strongest tested \emph{phantom-depth} configuration; it is not a real-tissue or polyp-size result. \\
+
+PPS depends on specular handling. & PPS-only Run C is weaker than the baseline; the SpecularNet plus PPS Run D is stronger than Run B and Run A. & The tested evidence supports PPS when paired with SpecularNet, not a blanket claim for PPS. \\
+
+Target-only adaptation is unsafe. & Run B and Run D target-only branches failed a planned relative-depth gate; another short full branch retained relative structure but drifted in absolute scale. & Unconstrained adaptation can damage the source prior or metric calibration. \\
+
+Frozen depth is a control. & In \texttt{pose\_transform} and Run B \texttt{teacher\_pose\_transform}, encoder/depth/specular hashes and depth outputs were unchanged. & The controls establish no forgetting for frozen modules, not clinical-domain depth adaptation. \\
+
+Source replay is unselected. & A 2k replay checkpoint improved a sparse PolypSense3D raw gate (MAE 8.5612~mm) while source guardrails remained near baseline. The 3k final checkpoint is clinically interesting but awaits fixed-panel and scale-aware selection. & Replay can protect source performance during trainable-depth adaptation. It does not establish broad clinical metric depth or polyp sizing. \\
+\bottomrule
+\end{tabularx}
+\caption{Claim-safe preliminary results. All adaptation candidates remain
+subject to source-depth, source-pose, fixed-panel, and scale-aware gates.}
+\label{tab:findings}
+\end{table*}
+
+The evidence also identifies what is missing. The sparse clinical-depth signal
+measures a limited set of labelled points; it neither measures a lesion's
+longest axis nor validates 5-mm or 10-mm decision thresholds. The private
+candidate size archive cannot serve as headline evidence until duplicate and
+conflicting labels, mixed coordinate conventions, and possible split leakage
+are resolved.
+
+\section{Discussion}
+
+The results separate two useful but different outcomes: preserving a source
+geometry prior and establishing a clinical measurement endpoint. Run D should
+remain the phantom baseline because it is the strongest tested source-domain
+configuration. The target-only failures mean that REALColon adaptation should
+not be selected by training loss or a single target signal. Conversely, frozen
+depth controls are valuable because they localize forgetting, but should not be
+misdescribed as successful clinical adaptation.
+
+The direct-sizing literature supports a complementary path. A single-scope,
+snare-anchored study has evaluated direct size regression with segmentation and
+depth cues \cite{yii2025referencefree}, and MPSE reports direct per-frame
+regression with polyp-level aggregation \cite{lawrence2026mpse}. These studies
+do not remove scale transfer as a problem, but they show that a useful endpoint
+need not be ``reconstruct a point cloud, then measure it.'' The recommended
+next track is a short-video direct head with lesion-level aggregation, explicit
+quality control, and a metric output only when a validated anchor is visible;
+otherwise it should return ordinal probabilities or abstain.
+
+\section{Limitations}
+
+This is an internal preliminary study, not an independent clinical validation.
+C3VDv2 is a controlled phantom benchmark, and REALColon lacks dense clinical
+depth ground truth. Reported project numbers are traceable to the canonical
+experiment index rather than a public checkpoint release. Sparse clinical
+points, private candidate labels, and fixed qualitative panels remain
+insufficient for metric lesion-size claims. No conclusion here establishes
+clinical generalization, regulatory readiness, or real-domain 10-mm threshold
+accuracy.
+
+\section{Conclusion}
+
+Run D is the preferred C3VDv2 phantom-depth baseline. Target-only REALColon
+adaptation has shown forgetting or scale drift; frozen-depth branches are
+no-forgetting controls; and source replay is a guarded but not yet selected
+clinical signal. The immediate priority is not a longer adaptation campaign.
+It is a target-domain selector and leakage-checked, anchor-annotated clinical
+evaluation that can support a direct, clip-level sizing endpoint.
+
+\begingroup
+\footnotesize
+\bibliographystyle{plain}
+\bibliography{references}
+\endgroup
+\end{document}
